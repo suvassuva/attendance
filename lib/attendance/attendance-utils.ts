@@ -257,3 +257,4 @@ export function calculateAttendanceStats(
     totalRecordsInContext: totalInContext,
   };
 }
+
