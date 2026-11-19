@@ -11,13 +11,14 @@ import {
   RotateCcw,
   Plus,
 } from 'lucide-react';
-import { AttendanceRecord, AttendanceStatus } from '@/types/attendance';
+import { Attendance, AttendanceStatus } from '@/types/attendance';
+import { formatToDisplayTime } from '@/lib/attendance/attendance-utils';
 
 interface AttendanceTableProps {
-  records: AttendanceRecord[];
+  records: Attendance[];
   isLoading?: boolean;
-  onEdit: (record: AttendanceRecord) => void;
-  onDelete: (record: AttendanceRecord) => void;
+  onEdit: (record: Attendance) => void;
+  onDelete: (record: Attendance) => void;
   onResetFilters?: () => void;
   onAddNew?: () => void;
 }
@@ -185,8 +186,11 @@ export default function AttendanceTable({
           </thead>
           <tbody className="divide-y divide-slate-100 text-sm text-slate-700">
             {records.map((record) => {
-              const avatarStyle = getAvatarColor(record.employeeName);
-              const initials = getInitials(record.employeeName);
+              const displayName = record.name || record.employeeName || 'Unknown Employee';
+              const avatarStyle = getAvatarColor(displayName);
+              const initials = getInitials(displayName);
+              const displayCheckIn = formatToDisplayTime(record.checkIn);
+              const displayCheckOut = formatToDisplayTime(record.checkOut);
 
               return (
                 <tr
@@ -203,10 +207,10 @@ export default function AttendanceTable({
                       </div>
                       <div className="min-w-0">
                         <p className="font-medium text-slate-900 truncate group-hover:text-blue-600 transition-colors">
-                          {record.employeeName}
+                          {displayName}
                         </p>
                         <p className="text-xs text-slate-400 truncate flex items-center gap-1.5">
-                          <span>{record.employeeId}</span>
+                          <span>{record.employeeId || 'N/A'}</span>
                           {record.email && (
                             <>
                               <span>•</span>
@@ -238,7 +242,7 @@ export default function AttendanceTable({
                   <td className="py-3.5 px-4 whitespace-nowrap">
                     <div className="flex items-center gap-1.5 text-xs font-medium text-slate-700">
                       <Clock className="w-3.5 h-3.5 text-slate-400" />
-                      <span>{record.checkIn}</span>
+                      <span>{displayCheckIn}</span>
                     </div>
                   </td>
 
@@ -246,7 +250,7 @@ export default function AttendanceTable({
                   <td className="py-3.5 px-4 whitespace-nowrap">
                     <div className="flex items-center gap-1.5 text-xs font-medium text-slate-700">
                       <Clock className="w-3.5 h-3.5 text-slate-400" />
-                      <span>{record.checkOut}</span>
+                      <span>{displayCheckOut}</span>
                     </div>
                   </td>
 
@@ -263,7 +267,7 @@ export default function AttendanceTable({
                         onClick={() => onEdit(record)}
                         title="Edit Attendance"
                         className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-md transition-colors cursor-pointer"
-                        aria-label={`Edit ${record.employeeName}`}
+                        aria-label={`Edit ${displayName}`}
                       >
                         <Edit3 className="w-4 h-4" />
                       </button>
@@ -272,7 +276,7 @@ export default function AttendanceTable({
                         onClick={() => onDelete(record)}
                         title="Delete Attendance"
                         className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-md transition-colors cursor-pointer"
-                        aria-label={`Delete ${record.employeeName}`}
+                        aria-label={`Delete ${displayName}`}
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>
@@ -306,4 +310,3 @@ export default function AttendanceTable({
     </div>
   );
 }
-

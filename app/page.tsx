@@ -1,12 +1,13 @@
 'use client';
 
-import React, { useState, useMemo, useTransition } from 'react';
+import React, { useState, useEffect, useMemo, useTransition, useCallback } from 'react';
 import {
   Users,
   UserCheck,
   Clock,
   UserX,
   CheckCircle2,
+  AlertTriangle,
 } from 'lucide-react';
 import Header from '@/components/Header';
 import StatsCard from '@/components/StatsCard';
@@ -14,18 +15,27 @@ import AttendanceFilters from '@/components/AttendanceFilters';
 import AttendanceTable from '@/components/AttendanceTable';
 import AttendanceModal from '@/components/AttendanceModal';
 import DeleteConfirmation from '@/components/DeleteConfirmation';
-import { INITIAL_ATTENDANCE_DATA, DEPARTMENTS } from '@/lib/dummy-data';
+import { DEPARTMENTS, INITIAL_ATTENDANCE_DATA } from '@/lib/dummy-data';
 import {
-  AttendanceRecord,
+  Attendance,
   AttendanceFiltersState,
   AttendanceFormData,
 } from '@/types/attendance';
+import {
+  attendanceService,
+  DuplicateAttendanceError,
+} from '@/lib/attendance/attendance-service';
+import { calculateAttendanceStats } from '@/lib/attendance/attendance-utils';
 
 export default function AttendanceDashboardPage() {
-  // Main attendance state
-  const [records, setRecords] = useState<AttendanceRecord[]>(INITIAL_ATTENDANCE_DATA);
-  const [isPending, startTransition] = useTransition();
+  // Main attendance records state initialized from seed data
+  const [records, setRecords] = useState<Attendance[]>(INITIAL_ATTENDANCE_DATA);
+
+  // Async loading & submission states
   const [isLoading, setIsLoading] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [, startTransition] = useTransition();
 
   // Filter state
   const [filters, setFilters] = useState<AttendanceFiltersState>({
@@ -37,23 +47,50 @@ export default function AttendanceDashboardPage() {
 
   // Modal states
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [editingRecord, setEditingRecord] = useState<AttendanceRecord | null>(null);
+  const [editingRecord, setEditingRecord] = useState<Attendance | null>(null);
 
   // Delete dialog state
-  const [recordToDelete, setRecordToDelete] = useState<AttendanceRecord | null>(null);
+  const [recordToDelete, setRecordToDelete] = useState<Attendance | null>(null);
 
-  // User notification banner
+  // Toast notification state
   const [toastMessage, setToastMessage] = useState<{
     text: string;
-    type: 'success' | 'info';
+    type: 'success' | 'info' | 'error';
   } | null>(null);
 
-  const showToast = (text: string, type: 'success' | 'info' = 'success') => {
+  const showToast = useCallback((text: string, type: 'success' | 'info' | 'error' = 'success') => {
     setToastMessage({ text, type });
     setTimeout(() => {
       setToastMessage(null);
-    }, 4000);
-  };
+    }, 4500);
+  }, []);
+
+  // Sync initial load with backend service
+  useEffect(() => {
+    let active = true;
+    attendanceService
+      .getAttendanceRecords()
+      .then((data) => {
+        if (active) {
+          setRecords(data);
+        }
+      })
+      .catch((err) => {
+        if (active) {
+          const msg = err instanceof Error ? err.message : 'Failed to load attendance records';
+          showToast(msg, 'error');
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [showToast]);
+
+  // Update KPI statistics whenever records or target date changes
+  const kpiStats = useMemo(() => {
+    return calculateAttendanceStats(records, filters.date || undefined);
+  }, [records, filters.date]);
 
   // Filter change handler
   const handleFilterChange = <K extends keyof AttendanceFiltersState>(
@@ -75,60 +112,20 @@ export default function AttendanceDashboardPage() {
     setTimeout(() => {
       setIsLoading(false);
       showToast('Filters reset to default view', 'info');
-    }, 250);
+    }, 200);
   };
 
-  // Dynamic KPI calculation based on current date context or records
-  const kpiStats = useMemo(() => {
-    // Determine the relevant date context for "Today"
-    const targetDate = filters.date || '2026-11-19';
-    const dayRecords = records.filter((r) => r.date === targetDate);
-
-    // If date is set to "All", calculate on all records, else calculate for targeted date
-    const contextRecords = filters.date ? dayRecords : records;
-
-    const totalInContext = contextRecords.length;
-    const presentCount = contextRecords.filter((r) => r.status === 'Present').length;
-    const lateCount = contextRecords.filter((r) => r.status === 'Late').length;
-    const absentCount = contextRecords.filter((r) => r.status === 'Absent').length;
-    const halfDayCount = contextRecords.filter((r) => r.status === 'Half-Day').length;
-
-    // Total unique employees known in system
-    const uniqueEmployeeIds = new Set(records.map((r) => r.employeeId || r.employeeName));
-    const totalEmployeesCount = uniqueEmployeeIds.size;
-
-    // Percentages
-    const presentRate =
-      totalInContext > 0 ? Math.round(((presentCount + halfDayCount) / totalInContext) * 100) : 0;
-    const lateRate =
-      totalInContext > 0 ? Math.round((lateCount / totalInContext) * 100) : 0;
-    const absentRate =
-      totalInContext > 0 ? Math.round((absentCount / totalInContext) * 100) : 0;
-
-    return {
-      totalEmployees: totalEmployeesCount,
-      presentToday: presentCount,
-      lateToday: lateCount,
-      absentToday: absentCount,
-      presentRate,
-      lateRate,
-      absentRate,
-      contextCount: totalInContext,
-      targetDate,
-    };
-  }, [records, filters.date]);
-
-  // Filtered records matching search, department, status, and date
+  // Filtered records matching active filters
   const filteredRecords = useMemo(() => {
     return records.filter((record) => {
       // 1. Search Query
       if (filters.searchQuery.trim()) {
         const query = filters.searchQuery.toLowerCase().trim();
-        const matchesName = record.employeeName.toLowerCase().includes(query);
-        const matchesId = record.employeeId?.toLowerCase().includes(query);
-        const matchesEmail = record.email?.toLowerCase().includes(query);
-        const matchesDept = record.department.toLowerCase().includes(query);
-        if (!matchesName && !matchesId && !matchesEmail && !matchesDept) {
+        const displayName = (record.name || record.employeeName || '').toLowerCase();
+        const id = (record.employeeId || '').toLowerCase();
+        const email = (record.email || '').toLowerCase();
+        const dept = (record.department || '').toLowerCase();
+        if (!displayName.includes(query) && !id.includes(query) && !email.includes(query) && !dept.includes(query)) {
           return false;
         }
       }
@@ -159,69 +156,93 @@ export default function AttendanceDashboardPage() {
   };
 
   // Open Edit modal
-  const handleOpenEditModal = (record: AttendanceRecord) => {
+  const handleOpenEditModal = (record: Attendance) => {
     setEditingRecord(record);
     setIsModalOpen(true);
   };
 
-  // Save (Create or Update) handler
-  const handleSaveAttendance = (formData: AttendanceFormData, recordId?: string) => {
-    startTransition(() => {
+  // Save (Create or Update) handler with duplicate check and validation
+  const handleSaveAttendance = async (formData: AttendanceFormData, recordId?: string) => {
+    setIsSaving(true);
+    try {
       if (recordId) {
-        // Edit existing record
-        setRecords((prev) =>
-          prev.map((r) =>
-            r.id === recordId
-              ? {
-                  ...r,
-                  employeeName: formData.employeeName,
-                  department: formData.department,
-                  date: formData.date,
-                  checkIn: formData.checkIn,
-                  checkOut: formData.checkOut,
-                  status: formData.status,
-                  notes: formData.notes,
-                }
-              : r
-          )
-        );
-        showToast(`Attendance updated for ${formData.employeeName}`);
-      } else {
-        // Create new record
-        const newRecord: AttendanceRecord = {
-          id: `att-${Date.now()}`,
-          employeeId: `EMP-${Math.floor(1000 + Math.random() * 9000)}`,
-          employeeName: formData.employeeName,
-          email: `${formData.employeeName.toLowerCase().replace(/\s+/g, '.')}@company.com`,
+        // Update existing record via business service
+        const updated = await attendanceService.updateAttendance(recordId, {
+          name: formData.name,
+          employeeName: formData.name,
           department: formData.department,
           date: formData.date,
           checkIn: formData.checkIn,
           checkOut: formData.checkOut,
           status: formData.status,
           notes: formData.notes,
-        };
+        });
 
-        setRecords((prev) => [newRecord, ...prev]);
-        showToast(`Attendance recorded for ${formData.employeeName}`);
+        startTransition(() => {
+          setRecords((prev) => prev.map((r) => (r.id === recordId ? updated : r)));
+        });
+
+        setIsModalOpen(false);
+        setEditingRecord(null);
+        showToast(`Attendance record updated for ${updated.name}`);
+      } else {
+        // Create new record via business service (includes duplicate prevention)
+        const created = await attendanceService.createAttendance({
+          name: formData.name,
+          employeeName: formData.name,
+          department: formData.department,
+          date: formData.date,
+          checkIn: formData.checkIn,
+          checkOut: formData.checkOut,
+          status: formData.status,
+          notes: formData.notes,
+        });
+
+        startTransition(() => {
+          setRecords((prev) => [created, ...prev]);
+        });
+
+        setIsModalOpen(false);
+        setEditingRecord(null);
+        showToast(`Attendance recorded for ${created.name}`);
       }
-    });
-
-    setIsModalOpen(false);
-    setEditingRecord(null);
+    } catch (error) {
+      if (error instanceof DuplicateAttendanceError) {
+        showToast(error.message, 'error');
+      }
+      // Re-throw so modal form can display field-specific error banner if needed
+      throw error;
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   // Delete handlers
-  const handlePromptDelete = (record: AttendanceRecord) => {
+  const handlePromptDelete = (record: Attendance) => {
     setRecordToDelete(record);
   };
 
-  const handleConfirmDelete = () => {
+  const handleConfirmDelete = async () => {
     if (!recordToDelete) return;
-    const deletedName = recordToDelete.employeeName;
+    const deletedName = recordToDelete.name || recordToDelete.employeeName || 'Employee';
+    const targetId = recordToDelete.id;
 
-    setRecords((prev) => prev.filter((r) => r.id !== recordToDelete.id));
-    setRecordToDelete(null);
-    showToast(`Record for ${deletedName} deleted`, 'info');
+    setIsDeleting(true);
+    try {
+      await attendanceService.deleteAttendance(targetId);
+
+      startTransition(() => {
+        setRecords((prev) => prev.filter((r) => r.id !== targetId));
+      });
+
+      setRecordToDelete(null);
+      showToast(`Record for ${deletedName} deleted`, 'info');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to delete attendance record';
+      showToast(msg, 'error');
+    } finally {
+      setIsDeleting(false);
+    }
   };
 
   return (
@@ -237,15 +258,27 @@ export default function AttendanceDashboardPage() {
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
         {/* Toast Alert Banner */}
         {toastMessage && (
-          <div className="flex items-center justify-between p-3.5 bg-blue-50 border border-blue-200 text-blue-900 rounded-xl text-xs sm:text-sm shadow-xs animate-in fade-in slide-in-from-top-2 duration-200">
+          <div
+            className={`flex items-center justify-between p-3.5 border rounded-xl text-xs sm:text-sm shadow-xs animate-in fade-in slide-in-from-top-2 duration-200 ${
+              toastMessage.type === 'error'
+                ? 'bg-rose-50 border-rose-200 text-rose-900'
+                : toastMessage.type === 'info'
+                ? 'bg-slate-100 border-slate-300 text-slate-800'
+                : 'bg-blue-50 border-blue-200 text-blue-900'
+            }`}
+          >
             <div className="flex items-center gap-2">
-              <CheckCircle2 className="w-4 h-4 text-blue-600 shrink-0" />
+              {toastMessage.type === 'error' ? (
+                <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+              ) : (
+                <CheckCircle2 className="w-4 h-4 text-blue-600 shrink-0" />
+              )}
               <span className="font-medium">{toastMessage.text}</span>
             </div>
             <button
               type="button"
               onClick={() => setToastMessage(null)}
-              className="text-blue-500 hover:text-blue-700 text-xs font-semibold px-2"
+              className="text-xs font-semibold px-2 cursor-pointer hover:opacity-75"
             >
               Dismiss
             </button>
@@ -375,7 +408,7 @@ export default function AttendanceDashboardPage() {
 
           <AttendanceTable
             records={filteredRecords}
-            isLoading={isLoading || isPending}
+            isLoading={isLoading}
             onEdit={handleOpenEditModal}
             onDelete={handlePromptDelete}
             onResetFilters={handleResetFilters}
@@ -394,6 +427,7 @@ export default function AttendanceDashboardPage() {
         onSave={handleSaveAttendance}
         initialData={editingRecord}
         departments={DEPARTMENTS}
+        isSubmitting={isSaving}
       />
 
       {/* 6. Delete Confirmation Dialog */}
@@ -402,6 +436,7 @@ export default function AttendanceDashboardPage() {
         onClose={() => setRecordToDelete(null)}
         onConfirm={handleConfirmDelete}
         record={recordToDelete}
+        isDeleting={isDeleting}
       />
     </div>
   );

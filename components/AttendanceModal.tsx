@@ -1,49 +1,42 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { X, User, Building, Calendar, Clock, CheckCircle2, AlertCircle } from 'lucide-react';
 import {
-  AttendanceRecord,
+  X,
+  User,
+  Building,
+  Calendar,
+  Clock,
+  CheckCircle2,
+  AlertCircle,
+  Loader2,
+} from 'lucide-react';
+import {
+  Attendance,
   AttendanceStatus,
   Department,
   AttendanceFormData,
+  ValidationErrors,
 } from '@/types/attendance';
+import { validateAttendance } from '@/lib/attendance/attendance-validation';
+import { formatToHHmm } from '@/lib/attendance/attendance-utils';
 
 interface AttendanceModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSave: (formData: AttendanceFormData, recordId?: string) => void;
-  initialData?: AttendanceRecord | null;
+  onSave: (formData: AttendanceFormData, recordId?: string) => Promise<boolean | void> | boolean | void;
+  initialData?: Attendance | null;
   departments: Department[];
+  isSubmitting?: boolean;
 }
 
 const STATUSES: AttendanceStatus[] = ['Present', 'Late', 'Half-Day', 'Absent'];
 
-// Helper to convert 12-hour string (e.g. "09:00 AM") to "09:00" for input type="time"
-function toTimeInput(timeStr: string): string {
+// Converts HH:mm (or 12-hour AM/PM) to HH:mm for native time input
+function toTimeInput(timeStr?: string): string {
   if (!timeStr || timeStr === '--:--') return '';
-  const match = timeStr.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i);
-  if (!match) return timeStr;
-  let hours = parseInt(match[1], 10);
-  const minutes = match[2];
-  const ampm = match[3]?.toUpperCase();
-
-  if (ampm === 'PM' && hours < 12) hours += 12;
-  if (ampm === 'AM' && hours === 12) hours = 0;
-
-  return `${hours.toString().padStart(2, '0')}:${minutes}`;
-}
-
-// Helper to convert "09:00" from input type="time" to "09:00 AM"
-function fromTimeInput(time24: string): string {
-  if (!time24) return '--:--';
-  const [hStr, mStr] = time24.split(':');
-  let h = parseInt(hStr, 10);
-  if (isNaN(h)) return '--:--';
-  const ampm = h >= 12 ? 'PM' : 'AM';
-  h = h % 12;
-  if (h === 0) h = 12;
-  return `${h.toString().padStart(2, '0')}:${mStr} ${ampm}`;
+  const formatted = formatToHHmm(timeStr);
+  return formatted === '--:--' ? '' : formatted;
 }
 
 function AttendanceModalContent({
@@ -51,117 +44,91 @@ function AttendanceModalContent({
   departments,
   onClose,
   onSave,
+  isSubmitting = false,
 }: {
-  initialData?: AttendanceRecord | null;
+  initialData?: Attendance | null;
   departments: Department[];
   onClose: () => void;
-  onSave: (formData: AttendanceFormData, recordId?: string) => void;
+  onSave: (formData: AttendanceFormData, recordId?: string) => Promise<boolean | void> | boolean | void;
+  isSubmitting?: boolean;
 }) {
   const isEditing = Boolean(initialData);
 
+  const initialName = initialData?.name || initialData?.employeeName || '';
   const [formData, setFormData] = useState<AttendanceFormData>(() => {
     if (initialData) {
       return {
-        employeeName: initialData.employeeName,
+        name: initialName,
+        employeeName: initialName,
         department: initialData.department,
         date: initialData.date,
-        checkIn: initialData.checkIn,
-        checkOut: initialData.checkOut,
+        checkIn: toTimeInput(initialData.checkIn) || '09:00',
+        checkOut: toTimeInput(initialData.checkOut) || '17:30',
         status: initialData.status,
         notes: initialData.notes || '',
+        employeeId: initialData.employeeId,
       };
     }
     return {
+      name: '',
       employeeName: '',
       department: departments[0] || 'Engineering',
       date: '2026-11-19',
-      checkIn: '09:00 AM',
-      checkOut: '05:30 PM',
+      checkIn: '09:00',
+      checkOut: '17:30',
       status: 'Present',
       notes: '',
     };
   });
 
-  const [rawCheckInTime, setRawCheckInTime] = useState(() =>
-    initialData ? toTimeInput(initialData.checkIn) : '09:00'
-  );
-  const [rawCheckOutTime, setRawCheckOutTime] = useState(() =>
-    initialData ? toTimeInput(initialData.checkOut) : '17:30'
-  );
-
-  const [errors, setErrors] = useState<{
-    employeeName?: string;
-    department?: string;
-    date?: string;
-    checkIn?: string;
-    checkOut?: string;
-    status?: string;
-  }>({});
+  const [errors, setErrors] = useState<ValidationErrors>({});
+  const [serverError, setServerError] = useState<string | null>(null);
 
   const handleStatusChange = (newStatus: AttendanceStatus) => {
     setFormData((prev) => ({
       ...prev,
       status: newStatus,
-      checkIn: newStatus === 'Absent' ? '--:--' : fromTimeInput(rawCheckInTime) || '09:00 AM',
-      checkOut: newStatus === 'Absent' ? '--:--' : fromTimeInput(rawCheckOutTime) || '05:30 PM',
+      checkIn: newStatus === 'Absent' ? '--:--' : prev.checkIn === '--:--' ? '09:00' : prev.checkIn,
+      checkOut: newStatus === 'Absent' ? '--:--' : prev.checkOut === '--:--' ? '17:30' : prev.checkOut,
     }));
-    if (newStatus === 'Absent') {
-      setRawCheckInTime('');
-      setRawCheckOutTime('');
-    } else {
-      if (!rawCheckInTime) setRawCheckInTime('09:00');
-      if (!rawCheckOutTime) setRawCheckOutTime('17:30');
-    }
+    setErrors((prev) => ({ ...prev, status: undefined, checkIn: undefined, checkOut: undefined }));
+    setServerError(null);
   };
 
-  const validate = () => {
-    const newErrors: typeof errors = {};
-
-    if (!formData.employeeName.trim()) {
-      newErrors.employeeName = 'Employee name is required';
-    } else if (formData.employeeName.trim().length < 2) {
-      newErrors.employeeName = 'Name must be at least 2 characters';
-    }
-
-    if (!formData.department) {
-      newErrors.department = 'Department is required';
-    }
-
-    if (!formData.date) {
-      newErrors.date = 'Date is required';
-    }
-
-    if (!formData.status) {
-      newErrors.status = 'Status is required';
-    }
-
-    if (formData.status !== 'Absent') {
-      if (!rawCheckInTime && formData.checkIn === '--:--') {
-        newErrors.checkIn = 'Check-in time is required for non-absent status';
-      }
-    }
-
-    setErrors(newErrors);
-    return Object.keys(newErrors).length === 0;
-  };
-
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!validate()) return;
+    setServerError(null);
 
-    const finalData: AttendanceFormData = {
+    const isAbsent = formData.status === 'Absent';
+    const candidateData: AttendanceFormData = {
       ...formData,
-      employeeName: formData.employeeName.trim(),
-      checkIn: formData.status === 'Absent' ? '--:--' : fromTimeInput(rawCheckInTime),
-      checkOut:
-        formData.status === 'Absent'
-          ? '--:--'
-          : rawCheckOutTime
-          ? fromTimeInput(rawCheckOutTime)
-          : '--:--',
+      name: formData.name.trim(),
+      employeeName: formData.name.trim(),
+      checkIn: isAbsent ? '--:--' : formData.checkIn,
+      checkOut: isAbsent ? '--:--' : formData.checkOut,
     };
 
-    onSave(finalData, initialData?.id);
+    // Use shared business validation logic
+    const validationResult = validateAttendance({
+      name: candidateData.name,
+      department: candidateData.department,
+      date: candidateData.date,
+      status: candidateData.status,
+      checkIn: candidateData.checkIn,
+      checkOut: candidateData.checkOut,
+    });
+
+    if (!validationResult.isValid) {
+      setErrors(validationResult.errors);
+      return;
+    }
+
+    try {
+      await onSave(candidateData, initialData?.id);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to save attendance record.';
+      setServerError(message);
+    }
   };
 
   return (
@@ -181,7 +148,8 @@ function AttendanceModalContent({
         <button
           type="button"
           onClick={onClose}
-          className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-200/60 rounded-lg transition-colors cursor-pointer"
+          disabled={isSubmitting}
+          className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-200/60 rounded-lg transition-colors cursor-pointer disabled:opacity-50"
           aria-label="Close modal"
         >
           <X className="w-5 h-5" />
@@ -190,6 +158,17 @@ function AttendanceModalContent({
 
       {/* Form Body */}
       <form onSubmit={handleSubmit} className="p-6 space-y-4">
+        {/* Error alert banner (e.g. duplicate prevention error) */}
+        {serverError && (
+          <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg text-rose-700 text-xs flex items-start gap-2 animate-in fade-in">
+            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <span className="font-semibold block">Record Error</span>
+              <span>{serverError}</span>
+            </div>
+          </div>
+        )}
+
         {/* Employee Name */}
         <div>
           <label className="block text-xs font-semibold text-slate-700 mb-1.5">
@@ -199,23 +178,25 @@ function AttendanceModalContent({
             <User className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
             <input
               type="text"
-              value={formData.employeeName}
+              value={formData.name}
               onChange={(e) => {
-                setFormData({ ...formData, employeeName: e.target.value });
-                if (errors.employeeName) setErrors({ ...errors, employeeName: undefined });
+                setFormData({ ...formData, name: e.target.value, employeeName: e.target.value });
+                if (errors.name) setErrors({ ...errors, name: undefined });
+                if (serverError) setServerError(null);
               }}
               placeholder="e.g. Sarah Jenkins"
+              disabled={isSubmitting}
               className={`w-full pl-9 pr-3 py-2 text-sm bg-white border ${
-                errors.employeeName
+                errors.name
                   ? 'border-rose-400 focus:ring-rose-100'
                   : 'border-slate-300 focus:border-blue-500 focus:ring-blue-100'
-              } rounded-lg text-slate-800 placeholder-slate-400 focus:outline-hidden focus:ring-2 transition-all`}
+              } rounded-lg text-slate-800 placeholder-slate-400 focus:outline-hidden focus:ring-2 transition-all disabled:bg-slate-50`}
             />
           </div>
-          {errors.employeeName && (
+          {errors.name && (
             <p className="mt-1 text-xs text-rose-500 flex items-center gap-1">
               <AlertCircle className="w-3.5 h-3.5" />
-              {errors.employeeName}
+              {errors.name}
             </p>
           )}
         </div>
@@ -231,11 +212,12 @@ function AttendanceModalContent({
               <Building className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
               <select
                 value={formData.department}
+                disabled={isSubmitting}
                 onChange={(e) => {
-                  setFormData({ ...formData, department: e.target.value as Department });
+                  setFormData({ ...formData, department: e.target.value });
                   if (errors.department) setErrors({ ...errors, department: undefined });
                 }}
-                className="w-full pl-9 pr-3 py-2 text-sm bg-white border border-slate-300 rounded-lg text-slate-800 focus:outline-hidden focus:border-blue-500 focus:ring-2 focus:ring-blue-100 transition-all cursor-pointer"
+                className="w-full pl-9 pr-3 py-2 text-sm bg-white border border-slate-300 rounded-lg text-slate-800 focus:outline-hidden focus:border-blue-500 focus:ring-2 focus:ring-blue-100 transition-all cursor-pointer disabled:bg-slate-50"
               >
                 {departments.map((dept) => (
                   <option key={dept} value={dept}>
@@ -244,6 +226,12 @@ function AttendanceModalContent({
                 ))}
               </select>
             </div>
+            {errors.department && (
+              <p className="mt-1 text-xs text-rose-500 flex items-center gap-1">
+                <AlertCircle className="w-3.5 h-3.5" />
+                {errors.department}
+              </p>
+            )}
           </div>
 
           {/* Date */}
@@ -256,15 +244,17 @@ function AttendanceModalContent({
               <input
                 type="date"
                 value={formData.date}
+                disabled={isSubmitting}
                 onChange={(e) => {
                   setFormData({ ...formData, date: e.target.value });
                   if (errors.date) setErrors({ ...errors, date: undefined });
+                  if (serverError) setServerError(null);
                 }}
                 className={`w-full pl-9 pr-3 py-1.5 sm:py-2 text-sm bg-white border ${
                   errors.date
                     ? 'border-rose-400 focus:ring-rose-100'
                     : 'border-slate-300 focus:border-blue-500 focus:ring-blue-100'
-                } rounded-lg text-slate-800 focus:outline-hidden focus:ring-2 transition-all cursor-pointer`}
+                } rounded-lg text-slate-800 focus:outline-hidden focus:ring-2 transition-all cursor-pointer disabled:bg-slate-50`}
               />
             </div>
             {errors.date && (
@@ -298,8 +288,9 @@ function AttendanceModalContent({
                 <button
                   key={st}
                   type="button"
+                  disabled={isSubmitting}
                   onClick={() => handleStatusChange(st)}
-                  className={`py-2 px-3 text-xs rounded-lg border text-center transition-all cursor-pointer ${
+                  className={`py-2 px-3 text-xs rounded-lg border text-center transition-all cursor-pointer disabled:opacity-50 ${
                     isSelected
                       ? activeColor
                       : 'border-slate-200 text-slate-600 hover:bg-slate-50'
@@ -310,6 +301,12 @@ function AttendanceModalContent({
               );
             })}
           </div>
+          {errors.status && (
+            <p className="mt-1 text-xs text-rose-500 flex items-center gap-1">
+              <AlertCircle className="w-3.5 h-3.5" />
+              {errors.status}
+            </p>
+          )}
         </div>
 
         {/* Check-In & Check-Out Times */}
@@ -317,16 +314,21 @@ function AttendanceModalContent({
           {/* Check-in time */}
           <div>
             <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-              Check-in Time {formData.status !== 'Absent' && <span className="text-rose-500">*</span>}
+              Check-in Time (HH:mm){' '}
+              {formData.status !== 'Absent' ? (
+                <span className="text-rose-500">*</span>
+              ) : (
+                <span className="text-slate-400 font-normal">(Optional for Absent)</span>
+              )}
             </label>
             <div className="relative">
               <Clock className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
               <input
                 type="time"
-                disabled={formData.status === 'Absent'}
-                value={rawCheckInTime}
+                disabled={formData.status === 'Absent' || isSubmitting}
+                value={formData.status === 'Absent' ? '' : formData.checkIn}
                 onChange={(e) => {
-                  setRawCheckInTime(e.target.value);
+                  setFormData({ ...formData, checkIn: e.target.value });
                   if (errors.checkIn) setErrors({ ...errors, checkIn: undefined });
                 }}
                 className={`w-full pl-9 pr-3 py-1.5 sm:py-2 text-sm bg-white border ${
@@ -347,18 +349,31 @@ function AttendanceModalContent({
           {/* Check-out time */}
           <div>
             <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-              Check-out Time
+              Check-out Time (HH:mm)
             </label>
             <div className="relative">
               <Clock className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
               <input
                 type="time"
-                disabled={formData.status === 'Absent'}
-                value={rawCheckOutTime}
-                onChange={(e) => setRawCheckOutTime(e.target.value)}
-                className="w-full pl-9 pr-3 py-1.5 sm:py-2 text-sm bg-white border border-slate-300 rounded-lg text-slate-800 disabled:bg-slate-100 disabled:text-slate-400 focus:outline-hidden focus:border-blue-500 focus:ring-2 focus:ring-blue-100 transition-all"
+                disabled={formData.status === 'Absent' || isSubmitting}
+                value={formData.status === 'Absent' ? '' : formData.checkOut}
+                onChange={(e) => {
+                  setFormData({ ...formData, checkOut: e.target.value });
+                  if (errors.checkOut) setErrors({ ...errors, checkOut: undefined });
+                }}
+                className={`w-full pl-9 pr-3 py-1.5 sm:py-2 text-sm bg-white border ${
+                  errors.checkOut
+                    ? 'border-rose-400 focus:ring-rose-100'
+                    : 'border-slate-300 focus:border-blue-500 focus:ring-blue-100'
+                } rounded-lg text-slate-800 disabled:bg-slate-100 disabled:text-slate-400 focus:outline-hidden focus:ring-2 transition-all`}
               />
             </div>
+            {errors.checkOut && (
+              <p className="mt-1 text-xs text-rose-500 flex items-center gap-1">
+                <AlertCircle className="w-3.5 h-3.5" />
+                {errors.checkOut}
+              </p>
+            )}
           </div>
         </div>
 
@@ -369,10 +384,11 @@ function AttendanceModalContent({
           </label>
           <input
             type="text"
-            value={formData.notes}
+            value={formData.notes || ''}
+            disabled={isSubmitting}
             onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
             placeholder="e.g. Remote work, client visit, approved leave..."
-            className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg text-slate-800 placeholder-slate-400 focus:outline-hidden focus:border-blue-500 focus:ring-2 focus:ring-blue-100 transition-all"
+            className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg text-slate-800 placeholder-slate-400 focus:outline-hidden focus:border-blue-500 focus:ring-2 focus:ring-blue-100 transition-all disabled:bg-slate-50"
           />
         </div>
 
@@ -381,16 +397,27 @@ function AttendanceModalContent({
           <button
             type="button"
             onClick={onClose}
-            className="px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg transition-colors cursor-pointer"
+            disabled={isSubmitting}
+            className="px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg transition-colors cursor-pointer disabled:opacity-50"
           >
             Cancel
           </button>
           <button
             type="submit"
-            className="px-5 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 active:bg-blue-800 rounded-lg shadow-xs shadow-blue-600/20 transition-all flex items-center gap-1.5 cursor-pointer"
+            disabled={isSubmitting}
+            className="px-5 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 active:bg-blue-800 rounded-lg shadow-xs shadow-blue-600/20 transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
           >
-            <CheckCircle2 className="w-4 h-4" />
-            <span>{isEditing ? 'Save Changes' : 'Save Attendance'}</span>
+            {isSubmitting ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                <span>Saving...</span>
+              </>
+            ) : (
+              <>
+                <CheckCircle2 className="w-4 h-4" />
+                <span>{isEditing ? 'Save Changes' : 'Save Attendance'}</span>
+              </>
+            )}
           </button>
         </div>
       </form>
@@ -404,17 +431,18 @@ export default function AttendanceModal({
   onSave,
   initialData,
   departments,
+  isSubmitting = false,
 }: AttendanceModalProps) {
   // Close on ESC key
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && isOpen) {
+      if (e.key === 'Escape' && isOpen && !isSubmitting) {
         onClose();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, onClose]);
+  }, [isOpen, onClose, isSubmitting]);
 
   if (!isOpen) return null;
 
@@ -426,15 +454,20 @@ export default function AttendanceModal({
       className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4 sm:p-6"
     >
       {/* Backdrop click area */}
-      <div className="fixed inset-0" onClick={onClose} aria-hidden="true" />
+      <div
+        className="fixed inset-0"
+        onClick={() => !isSubmitting && onClose()}
+        aria-hidden="true"
+      />
 
-      {/* Modal Dialog Card keyed for auto-resetting state without cascading effects */}
+      {/* Modal Dialog Card keyed for auto-resetting state */}
       <AttendanceModalContent
         key={initialData?.id ?? 'create-attendance-modal'}
         initialData={initialData}
         departments={departments}
         onClose={onClose}
         onSave={onSave}
+        isSubmitting={isSubmitting}
       />
     </div>
   );

@@ -1,4 +1,8 @@
-export type AttendanceStatus = 'Present' | 'Late' | 'Half-Day' | 'Absent';
+export type AttendanceStatus =
+  | 'Present'
+  | 'Late'
+  | 'Half-Day'
+  | 'Absent';
 
 export type Department =
   | 'Engineering'
@@ -8,21 +12,28 @@ export type Department =
   | 'Human Resources'
   | 'Sales'
   | 'Finance'
-  | 'Operations';
+  | 'Operations'
+  | (string & {});
 
-export interface AttendanceRecord {
+export interface Attendance {
   id: string;
-  employeeId: string;
-  employeeName: string;
-  email: string;
-  avatarUrl?: string;
-  department: Department;
+  name: string;
+  department: string;
   date: string; // YYYY-MM-DD
-  checkIn: string; // e.g. "09:00 AM" or "--:--"
-  checkOut: string; // e.g. "05:30 PM" or "--:--"
+  checkIn: string; // HH:mm format (or empty string/--:-- for Absent)
+  checkOut: string; // HH:mm format (or empty string/--:-- for Absent)
   status: AttendanceStatus;
+  createdAt?: unknown;
+  employeeId?: string;
+  email?: string;
   notes?: string;
+  avatarUrl?: string;
+  // UI backward-compatibility alias
+  employeeName?: string;
 }
+
+// Backward-compatibility alias
+export type AttendanceRecord = Attendance;
 
 export interface AttendanceFiltersState {
   searchQuery: string;
@@ -32,22 +43,49 @@ export interface AttendanceFiltersState {
 }
 
 export interface AttendanceFormData {
-  employeeName: string;
-  department: Department;
+  name: string;
+  department: string;
   date: string;
   checkIn: string;
   checkOut: string;
   status: AttendanceStatus;
   notes?: string;
+  employeeId?: string;
+  // UI alias
+  employeeName?: string;
 }
 
-export interface KPICardData {
-  title: string;
-  value: number;
-  label: string;
-  description: string;
-  trend?: string;
-  trendType?: 'positive' | 'negative' | 'neutral';
-  color: 'blue' | 'green' | 'amber' | 'red';
+export interface AttendanceStats {
+  totalEmployees: number;
+  presentToday: number;
+  lateToday: number;
+  absentToday: number;
+  halfDayToday: number;
+  presentRate: number;
+  lateRate: number;
+  absentRate: number;
+  targetDate: string;
+  totalRecordsInContext: number;
 }
 
+export interface ValidationErrors {
+  name?: string;
+  department?: string;
+  date?: string;
+  status?: string;
+  checkIn?: string;
+  checkOut?: string;
+  general?: string;
+}
+
+export interface ValidationResult {
+  isValid: boolean;
+  errors: ValidationErrors;
+}
+
+export type CreateAttendanceDTO = Omit<Attendance, 'id' | 'createdAt'> & {
+  id?: string;
+  createdAt?: unknown;
+};
+
+export type UpdateAttendanceDTO = Partial<Omit<Attendance, 'id' | 'createdAt'>>;
