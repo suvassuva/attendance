@@ -1,4 +1,20 @@
 import {
+  collection,
+  doc,
+  getDocs,
+  getDoc,
+  updateDoc,
+  deleteDoc,
+  onSnapshot,
+  query,
+  orderBy,
+  serverTimestamp,
+  runTransaction,
+  Timestamp,
+  Unsubscribe,
+} from 'firebase/firestore';
+import { db, isFirebaseConfigured } from '@/lib/firebase';
+import {
   Attendance,
   AttendanceFiltersState,
   AttendanceStats,
@@ -11,6 +27,7 @@ import {
   calculateAttendanceStats,
   filterAttendanceRecords,
   formatToHHmm,
+  generateDeterministicDocId,
   searchAttendance,
 } from './attendance-utils';
 import {
@@ -31,22 +48,23 @@ export class NotFoundError extends Error {
   }
 }
 
+export class FirebaseNotConfiguredError extends Error {
+  constructor(message = 'Firebase environment variables are not configured in .env.local') {
+    super(message);
+    this.name = 'FirebaseNotConfiguredError';
+  }
+}
+
 /**
  * AttendanceService:
- * Modular, production-ready service encapsulating all data operations, business rules,
- * validation, and duplicate prevention.
- *
- * NOTE FOR PHASE 3 FIREBASE INTEGRATION:
- * The data access points in this service are mapped cleanly to Firestore operations:
- * - getAttendanceRecords -> getDocs(query(collection(db, 'attendance'), ...))
- * - getAttendanceById    -> getDoc(doc(db, 'attendance', id))
- * - createAttendance     -> addDoc(collection(db, 'attendance'), data)
- * - updateAttendance     -> updateDoc(doc(db, 'attendance', id), data)
- * - deleteAttendance     -> deleteDoc(doc(db, 'attendance', id))
+ * Full-stack data service supporting Cloud Firestore with real-time onSnapshot listeners,
+ * Firestore transactions for duplicate prevention, and an automated local fallback.
  */
 class AttendanceService {
-  // In-memory data store initialized from seed data
-  private records: Attendance[] = INITIAL_ATTENDANCE_DATA.map((item) => ({
+  private collectionName = 'attendance';
+
+  // In-memory fallback data store
+  private fallbackRecords: Attendance[] = INITIAL_ATTENDANCE_DATA.map((item) => ({
     ...item,
     name: item.name || item.employeeName || 'Unknown Employee',
     checkIn: formatToHHmm(item.checkIn),
@@ -54,11 +72,145 @@ class AttendanceService {
     createdAt: item.createdAt || new Date('2026-11-19T08:00:00Z').toISOString(),
   }));
 
+  // Local subscription listeners when using fallback mode
+  private localListeners: Set<(records: Attendance[]) => void> = new Set();
+
+  private notifyLocalListeners() {
+    const records = [...this.fallbackRecords];
+    this.localListeners.forEach((listener) => {
+      try {
+        listener(records);
+      } catch (e) {
+        console.error('Local listener error:', e);
+      }
+    });
+  }
+
   /**
-   * Retrieves all records, optionally filtered by search, department, status, and date.
+   * Helper to convert Firestore timestamp or ISO string to ISO string.
+   */
+  private formatCreatedAt(val: unknown): string {
+    if (!val) return new Date().toISOString();
+    if (val instanceof Timestamp) {
+      return val.toDate().toISOString();
+    }
+    if (typeof val === 'object' && val !== null && 'toDate' in val && typeof (val as { toDate: () => Date }).toDate === 'function') {
+      return (val as { toDate: () => Date }).toDate().toISOString();
+    }
+    if (typeof val === 'string') return val;
+    return new Date().toISOString();
+  }
+
+  /**
+   * Checks whether Firebase is currently connected and ready.
+   */
+  isLiveFirestore(): boolean {
+    return isFirebaseConfigured() && Boolean(db);
+  }
+
+  /**
+   * Real-time subscription to attendance records using Firestore onSnapshot.
+   * Cleans up cleanly when unsubscribe is invoked by the component.
+   */
+  subscribeToAttendance(
+    onUpdate: (records: Attendance[]) => void,
+    onError: (error: Error) => void
+  ): Unsubscribe {
+    // 1. Live Cloud Firestore onSnapshot subscription
+    if (this.isLiveFirestore() && db) {
+      try {
+        const attendanceRef = collection(db, this.collectionName);
+        const q = query(attendanceRef, orderBy('date', 'desc'));
+
+        const unsubscribe = onSnapshot(
+          q,
+          (snapshot) => {
+            const records: Attendance[] = snapshot.docs.map((docSnap) => {
+              const data = docSnap.data();
+              return {
+                id: docSnap.id,
+                name: data.name || '',
+                employeeName: data.name || '',
+                department: data.department || '',
+                date: data.date || '',
+                checkIn: data.checkIn || '--:--',
+                checkOut: data.checkOut || '--:--',
+                status: data.status || 'Present',
+                employeeId: data.employeeId || '',
+                email: data.email || '',
+                notes: data.notes || '',
+                createdAt: this.formatCreatedAt(data.createdAt),
+              };
+            });
+
+            // Sort by date desc, name asc
+            records.sort((a, b) => {
+              const dateCmp = b.date.localeCompare(a.date);
+              if (dateCmp !== 0) return dateCmp;
+              return a.name.localeCompare(b.name);
+            });
+
+            onUpdate(records);
+          },
+          (error) => {
+            console.error('Firestore onSnapshot listener error:', error);
+            onError(error);
+          }
+        );
+
+        return unsubscribe;
+      } catch (err) {
+        const error = err instanceof Error ? err : new Error('Failed to subscribe to Firestore');
+        onError(error);
+        return () => {};
+      }
+    }
+
+    // 2. Fallback in-memory subscription for local development or demo
+    this.localListeners.add(onUpdate);
+    onUpdate([...this.fallbackRecords]);
+
+    return () => {
+      this.localListeners.delete(onUpdate);
+    };
+  }
+
+  /**
+   * Retrieves all records with optional filters.
    */
   async getAttendanceRecords(filters?: Partial<AttendanceFiltersState>): Promise<Attendance[]> {
-    let result = [...this.records];
+    let result: Attendance[] = [];
+
+    if (this.isLiveFirestore() && db) {
+      try {
+        const attendanceRef = collection(db, this.collectionName);
+        const q = query(attendanceRef, orderBy('date', 'desc'));
+        const snapshot = await getDocs(q);
+
+        result = snapshot.docs.map((docSnap) => {
+          const data = docSnap.data();
+          return {
+            id: docSnap.id,
+            name: data.name || '',
+            employeeName: data.name || '',
+            department: data.department || '',
+            date: data.date || '',
+            checkIn: data.checkIn || '--:--',
+            checkOut: data.checkOut || '--:--',
+            status: data.status || 'Present',
+            employeeId: data.employeeId || '',
+            email: data.email || '',
+            notes: data.notes || '',
+            createdAt: this.formatCreatedAt(data.createdAt),
+          };
+        });
+      } catch (err) {
+        console.warn('Firestore fetch failed, falling back to local memory:', err);
+        result = [...this.fallbackRecords];
+      }
+    } else {
+      result = [...this.fallbackRecords];
+    }
 
     if (filters) {
       const fullFilters: AttendanceFiltersState = {
@@ -70,7 +222,6 @@ class AttendanceService {
       result = filterAttendanceRecords(result, fullFilters);
     }
 
-    // Sort by date descending, then name ascending
     return result.sort((a, b) => {
       const dateCompare = b.date.localeCompare(a.date);
       if (dateCompare !== 0) return dateCompare;
@@ -79,22 +230,41 @@ class AttendanceService {
   }
 
   /**
-   * Retrieves a single attendance record by ID.
+   * Retrieves a single record by ID.
    */
   async getAttendanceById(id: string): Promise<Attendance | null> {
-    const record = this.records.find((r) => r.id === id);
+    if (this.isLiveFirestore() && db) {
+      try {
+        const docRef = doc(db, this.collectionName, id);
+        const docSnap = await getDoc(docRef);
+        if (!docSnap.exists()) return null;
+
+        const data = docSnap.data();
+        return {
+          id: docSnap.id,
+          name: data.name || '',
+          employeeName: data.name || '',
+          department: data.department || '',
+          date: data.date || '',
+          checkIn: data.checkIn || '--:--',
+          checkOut: data.checkOut || '--:--',
+          status: data.status || 'Present',
+          employeeId: data.employeeId || '',
+          email: data.email || '',
+          notes: data.notes || '',
+          createdAt: this.formatCreatedAt(data.createdAt),
+        };
+      } catch (e) {
+        console.warn('Firestore getById failed, checking fallback:', e);
+      }
+    }
+
+    const record = this.fallbackRecords.find((r) => r.id === id);
     return record ? { ...record } : null;
   }
 
   /**
-   * Searches records matching a query text.
-   */
-  async searchAttendance(query: string): Promise<Attendance[]> {
-    return searchAttendance(this.records, query);
-  }
-
-  /**
-   * Creates a new attendance record with validation and duplicate prevention.
+   * Creates an attendance record with transactional duplicate prevention.
    */
   async createAttendance(data: CreateAttendanceDTO): Promise<Attendance> {
     const candidateName = (data.name ?? data.employeeName ?? '').trim();
@@ -105,11 +275,61 @@ class AttendanceService {
       name: candidateName,
     });
 
-    // 2. Prevent duplicate entries for the same employee on the same date
-    const dupCheck = checkDuplicateAttendance(this.records, {
+    const isAbsent = data.status === 'Absent';
+    const employeeId = data.employeeId || `EMP-${Math.floor(1000 + Math.random() * 9000)}`;
+    const email = data.email || `${candidateName.toLowerCase().replace(/\s+/g, '.')}@company.com`;
+    const checkIn = isAbsent ? '--:--' : formatToHHmm(data.checkIn);
+    const checkOut = isAbsent ? '--:--' : formatToHHmm(data.checkOut);
+
+    // 2. LIVE FIRESTORE: Transactional Duplicate Prevention & Document Creation
+    if (this.isLiveFirestore() && db) {
+      // Deterministic document ID to strictly guarantee uniqueness at the Firestore database level
+      const docId = data.id || generateDeterministicDocId(candidateName, data.date, employeeId);
+      const docRef = doc(db, this.collectionName, docId);
+
+      await runTransaction(db, async (transaction) => {
+        const existingDoc = await transaction.get(docRef);
+        if (existingDoc.exists()) {
+          throw new DuplicateAttendanceError(
+            `An attendance record for "${candidateName}" on ${data.date} already exists in Firestore.`
+          );
+        }
+
+        transaction.set(docRef, {
+          name: candidateName,
+          department: data.department,
+          date: data.date.trim(),
+          checkIn,
+          checkOut,
+          status: data.status,
+          employeeId,
+          email,
+          notes: data.notes?.trim() || '',
+          createdAt: serverTimestamp(),
+        });
+      });
+
+      return {
+        id: docId,
+        name: candidateName,
+        employeeName: candidateName,
+        department: data.department,
+        date: data.date.trim(),
+        checkIn,
+        checkOut,
+        status: data.status,
+        employeeId,
+        email,
+        notes: data.notes?.trim() || '',
+        createdAt: new Date().toISOString(),
+      };
+    }
+
+    // 3. FALLBACK LOCAL: In-memory store
+    const dupCheck = checkDuplicateAttendance(this.fallbackRecords, {
       name: candidateName,
       date: data.date,
-      employeeId: data.employeeId,
+      employeeId,
     });
 
     if (dupCheck.isDuplicate) {
@@ -118,59 +338,99 @@ class AttendanceService {
       );
     }
 
-    // 3. Format and store
-    const isAbsent = data.status === 'Absent';
     const newRecord: Attendance = {
-      id: data.id || `att-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      id: data.id || generateDeterministicDocId(candidateName, data.date, employeeId),
       name: candidateName,
       employeeName: candidateName,
-      employeeId: data.employeeId || `EMP-${Math.floor(1000 + Math.random() * 9000)}`,
-      email: data.email || `${candidateName.toLowerCase().replace(/\s+/g, '.')}@company.com`,
+      employeeId,
+      email,
       department: data.department,
       date: data.date.trim(),
-      checkIn: isAbsent ? '--:--' : formatToHHmm(data.checkIn),
-      checkOut: isAbsent ? '--:--' : formatToHHmm(data.checkOut),
+      checkIn,
+      checkOut,
       status: data.status,
       notes: data.notes?.trim() || '',
-      createdAt: data.createdAt || new Date().toISOString(),
+      createdAt: new Date().toISOString(),
     };
 
-    // Prepend to maintain reverse chronological order
-    this.records = [newRecord, ...this.records];
+    this.fallbackRecords = [newRecord, ...this.fallbackRecords];
+    this.notifyLocalListeners();
 
     return { ...newRecord };
   }
 
   /**
-   * Updates an existing attendance record with validation and duplicate check.
+   * Updates an existing attendance record.
    */
   async updateAttendance(id: string, data: UpdateAttendanceDTO): Promise<Attendance> {
-    const existingIndex = this.records.findIndex((r) => r.id === id);
-    if (existingIndex === -1) {
+    const existing = await this.getAttendanceById(id);
+    if (!existing) {
       throw new NotFoundError(`Attendance record with ID "${id}" was not found.`);
     }
 
-    const currentRecord = this.records[existingIndex];
-    const candidateName = (data.name ?? data.employeeName ?? currentRecord.name).trim();
-    const candidateDate = (data.date ?? currentRecord.date).trim();
-    const candidateStatus = data.status ?? currentRecord.status;
+    const candidateName = (data.name ?? data.employeeName ?? existing.name).trim();
+    const candidateDate = (data.date ?? existing.date).trim();
+    const candidateStatus = data.status ?? existing.status;
     const isAbsent = candidateStatus === 'Absent';
 
-    // 1. Validate combined data
+    // 1. Validate updated payload
     validateAttendanceOrThrow({
-      ...currentRecord,
+      ...existing,
       ...data,
       name: candidateName,
       date: candidateDate,
       status: candidateStatus,
     });
 
-    // 2. Check for duplicate if name, date, or employeeId changed
-    const dupCheck = checkDuplicateAttendance(this.records, {
+    const checkIn = isAbsent ? '--:--' : formatToHHmm(data.checkIn ?? existing.checkIn);
+    const checkOut = isAbsent ? '--:--' : formatToHHmm(data.checkOut ?? existing.checkOut);
+
+    // 2. LIVE FIRESTORE
+    if (this.isLiveFirestore() && db) {
+      const docRef = doc(db, this.collectionName, id);
+
+      // Check duplicate if name or date changed
+      if (candidateName !== existing.name || candidateDate !== existing.date) {
+        const dupId = generateDeterministicDocId(candidateName, candidateDate, existing.employeeId);
+        if (dupId !== id) {
+          const dupDoc = await getDoc(doc(db, this.collectionName, dupId));
+          if (dupDoc.exists()) {
+            throw new DuplicateAttendanceError(
+              `An attendance record for "${candidateName}" on ${candidateDate} already exists.`
+            );
+          }
+        }
+      }
+
+      await updateDoc(docRef, {
+        name: candidateName,
+        department: data.department ?? existing.department,
+        date: candidateDate,
+        status: candidateStatus,
+        checkIn,
+        checkOut,
+        notes: data.notes !== undefined ? data.notes.trim() : existing.notes,
+        // createdAt is intentionally preserved
+      });
+
+      return {
+        ...existing,
+        ...data,
+        name: candidateName,
+        employeeName: candidateName,
+        date: candidateDate,
+        status: candidateStatus,
+        checkIn,
+        checkOut,
+      };
+    }
+
+    // 3. FALLBACK LOCAL
+    const dupCheck = checkDuplicateAttendance(this.fallbackRecords, {
       id,
       name: candidateName,
       date: candidateDate,
-      employeeId: data.employeeId ?? currentRecord.employeeId,
+      employeeId: data.employeeId ?? existing.employeeId,
     });
 
     if (dupCheck.isDuplicate) {
@@ -179,61 +439,112 @@ class AttendanceService {
       );
     }
 
-    // 3. Update record
-    const updatedRecord: Attendance = {
-      ...currentRecord,
+    const updated: Attendance = {
+      ...existing,
       ...data,
       name: candidateName,
       employeeName: candidateName,
       date: candidateDate,
       status: candidateStatus,
-      checkIn: isAbsent ? '--:--' : formatToHHmm(data.checkIn ?? currentRecord.checkIn),
-      checkOut: isAbsent ? '--:--' : formatToHHmm(data.checkOut ?? currentRecord.checkOut),
+      checkIn,
+      checkOut,
     };
 
-    this.records[existingIndex] = updatedRecord;
+    const idx = this.fallbackRecords.findIndex((r) => r.id === id);
+    if (idx !== -1) {
+      this.fallbackRecords[idx] = updated;
+      this.notifyLocalListeners();
+    }
 
-    return { ...updatedRecord };
+    return updated;
   }
 
   /**
    * Deletes an attendance record by ID.
    */
   async deleteAttendance(id: string): Promise<boolean> {
-    const existingIndex = this.records.findIndex((r) => r.id === id);
-    if (existingIndex === -1) {
+    if (this.isLiveFirestore() && db) {
+      const docRef = doc(db, this.collectionName, id);
+      const docSnap = await getDoc(docRef);
+      if (!docSnap.exists()) {
+        throw new NotFoundError(`Attendance record with ID "${id}" was not found.`);
+      }
+      await deleteDoc(docRef);
+      return true;
+    }
+
+    const idx = this.fallbackRecords.findIndex((r) => r.id === id);
+    if (idx === -1) {
       throw new NotFoundError(`Attendance record with ID "${id}" was not found.`);
     }
 
-    this.records = this.records.filter((r) => r.id !== id);
+    this.fallbackRecords = this.fallbackRecords.filter((r) => r.id !== id);
+    this.notifyLocalListeners();
     return true;
   }
 
   /**
-   * Calculates KPI metrics dynamically based on current records.
+   * Seeds Cloud Firestore with initial sample records (one-click helper).
    */
-  async calculateStatistics(targetDate?: string): Promise<AttendanceStats> {
-    return calculateAttendanceStats(this.records, targetDate);
+  async seedFirestoreWithSampleData(): Promise<{ count: number }> {
+    if (!this.isLiveFirestore() || !db) {
+      throw new FirebaseNotConfiguredError();
+    }
+
+    let seededCount = 0;
+    for (const record of INITIAL_ATTENDANCE_DATA) {
+      const docId = generateDeterministicDocId(record.name, record.date, record.employeeId);
+      const docRef = doc(db, this.collectionName, docId);
+      const existing = await getDoc(docRef);
+
+      if (!existing.exists()) {
+        const isAbsent = record.status === 'Absent';
+        await runTransaction(db, async (t) => {
+          t.set(docRef, {
+            name: record.name,
+            department: record.department,
+            date: record.date,
+            checkIn: isAbsent ? '--:--' : formatToHHmm(record.checkIn),
+            checkOut: isAbsent ? '--:--' : formatToHHmm(record.checkOut),
+            status: record.status,
+            employeeId: record.employeeId,
+            email: record.email,
+            notes: record.notes || '',
+            createdAt: serverTimestamp(),
+          });
+        });
+        seededCount++;
+      }
+    }
+
+    return { count: seededCount };
   }
 
   /**
-   * Resets the service records back to initial mock data (useful for testing/demo).
+   * Computes statistics dynamically.
    */
-  async resetToSeedData(): Promise<void> {
-    this.records = INITIAL_ATTENDANCE_DATA.map((item) => ({
-      ...item,
-      name: item.name || item.employeeName || 'Unknown Employee',
-      checkIn: formatToHHmm(item.checkIn),
-      checkOut: formatToHHmm(item.checkOut),
-      createdAt: item.createdAt || new Date('2026-11-19T08:00:00Z').toISOString(),
-    }));
+  async calculateStatistics(targetDate?: string): Promise<AttendanceStats> {
+    const allRecords = await this.getAttendanceRecords();
+    return calculateAttendanceStats(allRecords, targetDate);
+  }
+
+  /**
+   * Searches records matching a query text.
+   */
+  async searchAttendance(query: string): Promise<Attendance[]> {
+    const records = await this.getAttendanceRecords();
+    return searchAttendance(records, query);
   }
 }
 
-// Singleton instance export
 export const attendanceService = new AttendanceService();
 
-// Reusable individual function exports for flexible composition
+// Reusable individual exports
+export const subscribeToAttendance = (
+  onUpdate: (records: Attendance[]) => void,
+  onError: (error: Error) => void
+) => attendanceService.subscribeToAttendance(onUpdate, onError);
+
 export const getAttendanceRecords = (filters?: Partial<AttendanceFiltersState>) =>
   attendanceService.getAttendanceRecords(filters);
 
@@ -248,9 +559,6 @@ export const updateAttendance = (id: string, data: UpdateAttendanceDTO) =>
 
 export const deleteAttendance = (id: string) =>
   attendanceService.deleteAttendance(id);
-
-export const searchAttendanceRecords = (query: string) =>
-  attendanceService.searchAttendance(query);
 
 export const calculateAttendanceStatistics = (targetDate?: string) =>
   attendanceService.calculateStatistics(targetDate);

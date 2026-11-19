@@ -9,6 +9,20 @@ export function normalizeEmployeeName(name: string): string {
 }
 
 /**
+ * Generates a deterministic Firestore document ID based on employee identity and date.
+ * Guarantees duplicate prevention directly at the database layer.
+ */
+export function generateDeterministicDocId(name: string, date: string, employeeId?: string): string {
+  const cleanDate = date.trim();
+  if (employeeId && employeeId.trim()) {
+    const cleanEmpId = employeeId.trim().toLowerCase().replace(/[^a-z0-9]/g, '_');
+    return `att_${cleanEmpId}_${cleanDate}`;
+  }
+  const normName = normalizeEmployeeName(name).replace(/[^a-z0-9]/g, '_');
+  return `att_${normName}_${cleanDate}`;
+}
+
+/**
  * Generates a unique deduplication key for an attendance entry.
  */
 export function getAttendanceKey(name: string, date: string, employeeId?: string): string {

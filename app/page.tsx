@@ -8,6 +8,7 @@ import {
   UserX,
   CheckCircle2,
   AlertTriangle,
+  Sparkles,
 } from 'lucide-react';
 import Header from '@/components/Header';
 import StatsCard from '@/components/StatsCard';
@@ -15,7 +16,7 @@ import AttendanceFilters from '@/components/AttendanceFilters';
 import AttendanceTable from '@/components/AttendanceTable';
 import AttendanceModal from '@/components/AttendanceModal';
 import DeleteConfirmation from '@/components/DeleteConfirmation';
-import { DEPARTMENTS, INITIAL_ATTENDANCE_DATA } from '@/lib/dummy-data';
+import { DEPARTMENTS } from '@/lib/dummy-data';
 import {
   Attendance,
   AttendanceFiltersState,
@@ -28,14 +29,18 @@ import {
 import { calculateAttendanceStats } from '@/lib/attendance/attendance-utils';
 
 export default function AttendanceDashboardPage() {
-  // Main attendance records state initialized from seed data
-  const [records, setRecords] = useState<Attendance[]>(INITIAL_ATTENDANCE_DATA);
+  // Main attendance records state
+  const [records, setRecords] = useState<Attendance[]>([]);
 
   // Async loading & submission states
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [isSeeding, setIsSeeding] = useState(false);
   const [, startTransition] = useTransition();
+
+  // Live Firestore detection
+  const isLiveFirestore = attendanceService.isLiveFirestore();
 
   // Filter state
   const [filters, setFilters] = useState<AttendanceFiltersState>({
@@ -65,29 +70,27 @@ export default function AttendanceDashboardPage() {
     }, 4500);
   }, []);
 
-  // Sync initial load with backend service
+  // 3. Real-Time Data Synchronization using Firestore onSnapshot
   useEffect(() => {
-    let active = true;
-    attendanceService
-      .getAttendanceRecords()
-      .then((data) => {
-        if (active) {
-          setRecords(data);
-        }
-      })
-      .catch((err) => {
-        if (active) {
-          const msg = err instanceof Error ? err.message : 'Failed to load attendance records';
-          showToast(msg, 'error');
-        }
-      });
+    const unsubscribe = attendanceService.subscribeToAttendance(
+      (updatedRecords) => {
+        setRecords(updatedRecords);
+        setIsLoading(false);
+      },
+      (error) => {
+        console.error('Realtime Firestore synchronization error:', error);
+        setIsLoading(false);
+        showToast(`Firestore Sync Notice: ${error.message}`, 'error');
+      }
+    );
 
+    // Clean up listener when component unmounts
     return () => {
-      active = false;
+      unsubscribe();
     };
   }, [showToast]);
 
-  // Update KPI statistics whenever records or target date changes
+  // Update KPI statistics automatically whenever records or target date changes
   const kpiStats = useMemo(() => {
     return calculateAttendanceStats(records, filters.date || undefined);
   }, [records, filters.date]);
@@ -102,17 +105,13 @@ export default function AttendanceDashboardPage() {
 
   // Reset filters handler
   const handleResetFilters = () => {
-    setIsLoading(true);
     setFilters({
       searchQuery: '',
       department: '',
       status: '',
       date: '',
     });
-    setTimeout(() => {
-      setIsLoading(false);
-      showToast('Filters reset to default view', 'info');
-    }, 200);
+    showToast('Filters reset to default view', 'info');
   };
 
   // Filtered records matching active filters
@@ -161,12 +160,12 @@ export default function AttendanceDashboardPage() {
     setIsModalOpen(true);
   };
 
-  // Save (Create or Update) handler with duplicate check and validation
+  // 4. CRUD Operations - Create & Update with Firestore Transaction / Duplicate Check
   const handleSaveAttendance = async (formData: AttendanceFormData, recordId?: string) => {
     setIsSaving(true);
     try {
       if (recordId) {
-        // Update existing record via business service
+        // Update existing record
         const updated = await attendanceService.updateAttendance(recordId, {
           name: formData.name,
           employeeName: formData.name,
@@ -178,15 +177,18 @@ export default function AttendanceDashboardPage() {
           notes: formData.notes,
         });
 
-        startTransition(() => {
-          setRecords((prev) => prev.map((r) => (r.id === recordId ? updated : r)));
-        });
+        // If local fallback, update state optimistically
+        if (!attendanceService.isLiveFirestore()) {
+          startTransition(() => {
+            setRecords((prev) => prev.map((r) => (r.id === recordId ? updated : r)));
+          });
+        }
 
         setIsModalOpen(false);
         setEditingRecord(null);
-        showToast(`Attendance record updated for ${updated.name}`);
+        showToast(`Attendance updated for ${updated.name}`);
       } else {
-        // Create new record via business service (includes duplicate prevention)
+        // Create new record with transactional duplicate prevention
         const created = await attendanceService.createAttendance({
           name: formData.name,
           employeeName: formData.name,
@@ -198,9 +200,12 @@ export default function AttendanceDashboardPage() {
           notes: formData.notes,
         });
 
-        startTransition(() => {
-          setRecords((prev) => [created, ...prev]);
-        });
+        // If local fallback, update state optimistically
+        if (!attendanceService.isLiveFirestore()) {
+          startTransition(() => {
+            setRecords((prev) => [created, ...prev]);
+          });
+        }
 
         setIsModalOpen(false);
         setEditingRecord(null);
@@ -209,15 +214,17 @@ export default function AttendanceDashboardPage() {
     } catch (error) {
       if (error instanceof DuplicateAttendanceError) {
         showToast(error.message, 'error');
+      } else {
+        const msg = error instanceof Error ? error.message : 'Failed to save attendance record.';
+        showToast(msg, 'error');
       }
-      // Re-throw so modal form can display field-specific error banner if needed
       throw error;
     } finally {
       setIsSaving(false);
     }
   };
 
-  // Delete handlers
+  // 4. CRUD Operations - Delete with Confirmation Dialog
   const handlePromptDelete = (record: Attendance) => {
     setRecordToDelete(record);
   };
@@ -231,9 +238,12 @@ export default function AttendanceDashboardPage() {
     try {
       await attendanceService.deleteAttendance(targetId);
 
-      startTransition(() => {
-        setRecords((prev) => prev.filter((r) => r.id !== targetId));
-      });
+      // If local fallback, update state optimistically
+      if (!attendanceService.isLiveFirestore()) {
+        startTransition(() => {
+          setRecords((prev) => prev.filter((r) => r.id !== targetId));
+        });
+      }
 
       setRecordToDelete(null);
       showToast(`Record for ${deletedName} deleted`, 'info');
@@ -242,6 +252,20 @@ export default function AttendanceDashboardPage() {
       showToast(msg, 'error');
     } finally {
       setIsDeleting(false);
+    }
+  };
+
+  // Seed sample data helper for Firestore
+  const handleSeedFirestore = async () => {
+    setIsSeeding(true);
+    try {
+      const result = await attendanceService.seedFirestoreWithSampleData();
+      showToast(`Successfully seeded ${result.count} attendance records into Cloud Firestore!`, 'success');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to seed sample records';
+      showToast(msg, 'error');
+    } finally {
+      setIsSeeding(false);
     }
   };
 
@@ -285,52 +309,83 @@ export default function AttendanceDashboardPage() {
           </div>
         )}
 
-        {/* Dashboard Title & Quick Stats Info */}
+        {/* Dashboard Title, Database Sync Indicator & Quick Date Presets */}
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div>
-            <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">
-              Overview & Analytics
-            </h2>
+            <div className="flex items-center gap-2.5">
+              <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">
+                Overview & Analytics
+              </h2>
+              {/* Firestore Real-Time Sync Indicator */}
+              <span
+                className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium border ${
+                  isLiveFirestore
+                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                    : 'bg-blue-50 text-blue-700 border-blue-200'
+                }`}
+              >
+                <span
+                  className={`w-1.5 h-1.5 rounded-full ${
+                    isLiveFirestore ? 'bg-emerald-500 animate-pulse' : 'bg-blue-500'
+                  }`}
+                />
+                {isLiveFirestore ? 'Firestore Real-Time Sync' : 'Local Fallback Mode'}
+              </span>
+            </div>
             <p className="text-xs sm:text-sm text-slate-500 mt-0.5">
               Real-time monitoring of team attendance, punctuality, and daily leaves.
             </p>
           </div>
 
-          {/* Quick Date Presets */}
-          <div className="flex items-center gap-1.5 bg-white p-1 rounded-lg border border-slate-200 text-xs shadow-xs self-start sm:self-auto">
-            <button
-              type="button"
-              onClick={() => handleFilterChange('date', '2026-11-19')}
-              className={`px-3 py-1.5 rounded-md font-medium transition-all cursor-pointer ${
-                filters.date === '2026-11-19'
-                  ? 'bg-blue-600 text-white shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-              }`}
-            >
-              Today
-            </button>
-            <button
-              type="button"
-              onClick={() => handleFilterChange('date', '2026-11-18')}
-              className={`px-3 py-1.5 rounded-md font-medium transition-all cursor-pointer ${
-                filters.date === '2026-11-18'
-                  ? 'bg-blue-600 text-white shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-              }`}
-            >
-              Yesterday
-            </button>
-            <button
-              type="button"
-              onClick={() => handleFilterChange('date', '')}
-              className={`px-3 py-1.5 rounded-md font-medium transition-all cursor-pointer ${
-                filters.date === ''
-                  ? 'bg-blue-600 text-white shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-              }`}
-            >
-              All Records
-            </button>
+          {/* Quick Date Presets & Seed Action */}
+          <div className="flex items-center gap-2 flex-wrap">
+            {isLiveFirestore && records.length === 0 && (
+              <button
+                type="button"
+                onClick={handleSeedFirestore}
+                disabled={isSeeding}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-amber-50 text-amber-800 border border-amber-200 hover:bg-amber-100 transition-colors cursor-pointer"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-amber-600" />
+                <span>{isSeeding ? 'Seeding Firestore...' : 'Seed Sample Data'}</span>
+              </button>
+            )}
+
+            <div className="flex items-center gap-1.5 bg-white p-1 rounded-lg border border-slate-200 text-xs shadow-xs self-start sm:self-auto">
+              <button
+                type="button"
+                onClick={() => handleFilterChange('date', '2026-11-19')}
+                className={`px-3 py-1.5 rounded-md font-medium transition-all cursor-pointer ${
+                  filters.date === '2026-11-19'
+                    ? 'bg-blue-600 text-white shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                }`}
+              >
+                Today
+              </button>
+              <button
+                type="button"
+                onClick={() => handleFilterChange('date', '2026-11-18')}
+                className={`px-3 py-1.5 rounded-md font-medium transition-all cursor-pointer ${
+                  filters.date === '2026-11-18'
+                    ? 'bg-blue-600 text-white shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                }`}
+              >
+                Yesterday
+              </button>
+              <button
+                type="button"
+                onClick={() => handleFilterChange('date', '')}
+                className={`px-3 py-1.5 rounded-md font-medium transition-all cursor-pointer ${
+                  filters.date === ''
+                    ? 'bg-blue-600 text-white shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                }`}
+              >
+                All Records
+              </button>
+            </div>
           </div>
         </div>
 
