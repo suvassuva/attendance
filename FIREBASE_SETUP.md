@@ -117,3 +117,4 @@ firebase deploy --only firestore:rules
 3. Observe Window 2: Window 2 updates immediately via Firestore's `onSnapshot` listener without refreshing the page!
 4. In Window 2, edit the record's status from **Present** to **Late**.
 5. Observe Window 1: The status badge and KPI counters update instantaneously in real time.
+

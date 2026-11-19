@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2563eb"/>
+      <stop offset="100%" stop-color="#1d4ed8"/>
+    </linearGradient>
+  </defs>
+  <!-- Background Card -->
+  <rect width="32" height="32" rx="7" fill="url(#bgGrad)"/>
+  
+  <!-- Calendar Outline -->
+  <rect x="6" y="8" width="20" height="18" rx="3.5" fill="none" stroke="#ffffff" stroke-width="1.8"/>
+  <line x1="6" y1="14" x2="26" y2="14" stroke="#ffffff" stroke-width="1.5" stroke-opacity="0.8"/>
+  
+  <!-- Calendar Rings -->
+  <rect x="10" y="5.5" width="2" height="4" rx="1" fill="#ffffff"/>
+  <rect x="20" y="5.5" width="2" height="4" rx="1" fill="#ffffff"/>
+  
+  <!-- Checkmark for Attendance Present -->
+  <path d="M11 20 L14.5 23 L21 16.5" fill="none" stroke="#34d399" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
