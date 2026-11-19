@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useMemo, useTransition, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   Users,
   UserCheck,
@@ -37,7 +37,6 @@ export default function AttendanceDashboardPage() {
   const [isSaving, setIsSaving] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isSeeding, setIsSeeding] = useState(false);
-  const [, startTransition] = useTransition();
 
   // Live Firestore detection
   const isLiveFirestore = attendanceService.isLiveFirestore();
@@ -74,7 +73,14 @@ export default function AttendanceDashboardPage() {
   useEffect(() => {
     const unsubscribe = attendanceService.subscribeToAttendance(
       (updatedRecords) => {
-        setRecords(updatedRecords);
+        // Ensure strictly unique IDs across incoming records
+        const uniqueMap = new Map<string, Attendance>();
+        updatedRecords.forEach((item) => {
+          if (!uniqueMap.has(item.id)) {
+            uniqueMap.set(item.id, item);
+          }
+        });
+        setRecords(Array.from(uniqueMap.values()));
         setIsLoading(false);
       },
       (error) => {
@@ -177,13 +183,6 @@ export default function AttendanceDashboardPage() {
           notes: formData.notes,
         });
 
-        // If local fallback, update state optimistically
-        if (!attendanceService.isLiveFirestore()) {
-          startTransition(() => {
-            setRecords((prev) => prev.map((r) => (r.id === recordId ? updated : r)));
-          });
-        }
-
         setIsModalOpen(false);
         setEditingRecord(null);
         showToast(`Attendance updated for ${updated.name}`);
@@ -199,13 +198,6 @@ export default function AttendanceDashboardPage() {
           status: formData.status,
           notes: formData.notes,
         });
-
-        // If local fallback, update state optimistically
-        if (!attendanceService.isLiveFirestore()) {
-          startTransition(() => {
-            setRecords((prev) => [created, ...prev]);
-          });
-        }
 
         setIsModalOpen(false);
         setEditingRecord(null);
@@ -237,14 +229,6 @@ export default function AttendanceDashboardPage() {
     setIsDeleting(true);
     try {
       await attendanceService.deleteAttendance(targetId);
-
-      // If local fallback, update state optimistically
-      if (!attendanceService.isLiveFirestore()) {
-        startTransition(() => {
-          setRecords((prev) => prev.filter((r) => r.id !== targetId));
-        });
-      }
-
       setRecordToDelete(null);
       showToast(`Record for ${deletedName} deleted`, 'info');
     } catch (err) {

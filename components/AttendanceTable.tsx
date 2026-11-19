@@ -98,6 +98,18 @@ export default function AttendanceTable({
   onResetFilters,
   onAddNew,
 }: AttendanceTableProps) {
+  // Guarantee unique items by record ID to prevent duplicate key console errors
+  const uniqueRecords = React.useMemo(() => {
+    const seen = new Set<string>();
+    return records.filter((record) => {
+      const recordKey = record.id;
+      if (!recordKey || seen.has(recordKey)) {
+        return false;
+      }
+      seen.add(recordKey);
+      return true;
+    });
+  }, [records]);
   // Skeleton loading view
   if (isLoading) {
     return (
@@ -130,7 +142,7 @@ export default function AttendanceTable({
   }
 
   // Empty state view
-  if (records.length === 0) {
+  if (uniqueRecords.length === 0) {
     return (
       <div className="bg-white rounded-xl border border-slate-200 shadow-xs p-10 sm:p-14 text-center">
         <div className="w-14 h-14 mx-auto rounded-full bg-slate-100 flex items-center justify-center text-slate-400 mb-4">
@@ -185,7 +197,7 @@ export default function AttendanceTable({
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100 text-sm text-slate-700">
-            {records.map((record) => {
+            {uniqueRecords.map((record) => {
               const displayName = record.name || record.employeeName || 'Unknown Employee';
               const avatarStyle = getAvatarColor(displayName);
               const initials = getInitials(displayName);
@@ -291,7 +303,7 @@ export default function AttendanceTable({
 
       {/* Table Footer */}
       <div className="px-4 sm:px-6 py-3 border-t border-slate-100 bg-slate-50/50 flex flex-col sm:flex-row items-center justify-between text-xs text-slate-500 gap-2">
-        <span>Showing {records.length} records</span>
+        <span>Showing {uniqueRecords.length} records</span>
         <div className="flex items-center gap-4">
           <span className="flex items-center gap-1.5">
             <span className="w-2 h-2 rounded-full bg-emerald-500" /> Present
