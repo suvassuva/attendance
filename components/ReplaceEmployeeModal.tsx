@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   X,
   ArrowLeftRight,
@@ -16,13 +16,14 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { Attendance, Branch, RelieverDetails } from '@/types/attendance';
-import { STAFF_MOVEMENTS } from '@/lib/dummy-data';
+import { STAFF_MOVEMENTS, INITIAL_ATTENDANCE_DATA } from '@/lib/dummy-data';
 
 interface ReplaceEmployeeModalProps {
   isOpen: boolean;
   onClose: () => void;
   record: Attendance | null;
   branches: Branch[];
+  records?: Attendance[];
   onAssignReliever: (
     absentRecordId: string,
     reliever: RelieverDetails
@@ -35,6 +36,7 @@ export default function ReplaceEmployeeModal({
   onClose,
   record,
   branches,
+  records,
   onAssignReliever,
   isSubmitting = false,
 }: ReplaceEmployeeModalProps) {
@@ -48,6 +50,80 @@ export default function ReplaceEmployeeModal({
   const [role, setRole] = useState('Reliever Branch Manager');
   const [notes, setNotes] = useState('');
   const [error, setError] = useState<string | null>(null);
+
+  // Autocomplete suggestions state
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [highlightedIndex, setHighlightedIndex] = useState(-1);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  // Build unified directory of candidates for auto-reflect/suggestions
+  const staffCandidates = useMemo(() => {
+    const list: Array<{ name: string; branch: string; role: string; isReliever?: boolean }> = [];
+    const seenNames = new Set<string>();
+    const currentNameLower = record?.name?.toLowerCase().trim() || '';
+
+    // 1. Add known designated relievers first
+    STAFF_MOVEMENTS.forEach((m) => {
+      const lower = m.name.toLowerCase().trim();
+      if (!seenNames.has(lower) && lower !== currentNameLower) {
+        seenNames.add(lower);
+        list.push({
+          name: m.name,
+          branch: m.from,
+          role: 'Designated Reliever',
+          isReliever: true,
+        });
+      }
+    });
+
+    // 2. Add from current live records or dummy database
+    const sourceRecords: Attendance[] = records && records.length > 0 ? records : INITIAL_ATTENDANCE_DATA;
+    sourceRecords.forEach((r: Attendance) => {
+      const name = (r.name || r.employeeName || '').trim();
+      if (!name) return;
+      const lower = name.toLowerCase();
+      if (!seenNames.has(lower) && lower !== currentNameLower) {
+        seenNames.add(lower);
+        const roleLabel =
+          r.role ||
+          (r.department === 'ABM' ? 'Assistant Branch Manager' : 'Branch Manager');
+        list.push({
+          name,
+          branch: r.branch || '',
+          role: roleLabel,
+          isReliever: r.isReliever,
+        });
+      }
+    });
+
+    return list;
+  }, [records, record]);
+
+  // Filter candidates matching typed text
+  const matchingCandidates = useMemo(() => {
+    const query = relieverName.trim().toLowerCase();
+    if (!query) {
+      return staffCandidates.slice(0, 6);
+    }
+    return staffCandidates
+      .filter(
+        (c) =>
+          c.name.toLowerCase().includes(query) ||
+          (c.branch && c.branch.toLowerCase().includes(query))
+      )
+      .slice(0, 8);
+  }, [relieverName, staffCandidates]);
+
+  // Click outside listener to dismiss autocomplete popup
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setShowSuggestions(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   // Initialize defaults when modal opens with a record
   useEffect(() => {
@@ -75,7 +151,43 @@ export default function ReplaceEmployeeModal({
     if (branches.includes(mov.from)) {
       setFromBranch(mov.from);
     }
-    setNotes(`Reliever ${mov.name} (${mov.from} -> ${toBranch})`);
+    setNotes(`Reliever ${mov.name} (${mov.from} -> ${toBranch}) covering for ${record.name}`);
+    setShowSuggestions(false);
+  };
+
+  const handleSelectCandidate = (candidate: { name: string; branch: string; role?: string }) => {
+    setRelieverName(candidate.name);
+    if (candidate.branch && branches.includes(candidate.branch)) {
+      setFromBranch(candidate.branch);
+    }
+    setNotes(`Reliever ${candidate.name} (${candidate.branch || fromBranch} -> ${toBranch}) covering for ${record.name}`);
+    setShowSuggestions(false);
+    setHighlightedIndex(-1);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (!showSuggestions || matchingCandidates.length === 0) {
+      if (e.key === 'ArrowDown') {
+        setShowSuggestions(true);
+      }
+      return;
+    }
+
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setHighlightedIndex((prev) => (prev < matchingCandidates.length - 1 ? prev + 1 : 0));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setHighlightedIndex((prev) => (prev > 0 ? prev - 1 : matchingCandidates.length - 1));
+    } else if (e.key === 'Enter') {
+      if (highlightedIndex >= 0 && highlightedIndex < matchingCandidates.length) {
+        e.preventDefault();
+        handleSelectCandidate(matchingCandidates[highlightedIndex]);
+      }
+    } else if (e.key === 'Escape') {
+      setShowSuggestions(false);
+      setHighlightedIndex(-1);
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -197,22 +309,101 @@ export default function ReplaceEmployeeModal({
             </div>
           )}
 
-          {/* Reliever Name */}
-          <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-              Replacement / Reliever Name <span className="text-rose-500">*</span>
-            </label>
+          {/* Reliever Name with Autocomplete / Auto-Reflect */}
+          <div className="relative" ref={dropdownRef}>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="block text-xs font-semibold text-slate-700">
+                Replacement / Reliever Name <span className="text-rose-500">*</span>
+              </label>
+              {showSuggestions && matchingCandidates.length > 0 && (
+                <span className="text-[11px] text-blue-600 font-medium">
+                  {matchingCandidates.length} staff found
+                </span>
+              )}
+            </div>
+
             <div className="relative">
               <User className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
               <input
                 type="text"
                 required
+                autoComplete="off"
                 value={relieverName}
-                onChange={(e) => setRelieverName(e.target.value)}
-                placeholder="e.g. Suryakanth or Sunil"
-                className="w-full pl-9 pr-3 py-2 text-sm bg-white border border-slate-300 rounded-lg text-slate-800 focus:outline-hidden focus:border-blue-500 focus:ring-2 focus:ring-blue-100 transition-all"
+                onChange={(e) => {
+                  setRelieverName(e.target.value);
+                  setShowSuggestions(true);
+                  setHighlightedIndex(-1);
+                }}
+                onFocus={() => setShowSuggestions(true)}
+                onKeyDown={handleKeyDown}
+                placeholder="Type name (e.g. Sikindar, Sunil, Arun, Ramesh)..."
+                className="w-full pl-9 pr-3 py-2 text-sm bg-white border border-slate-300 rounded-lg text-slate-800 placeholder-slate-400 focus:outline-hidden focus:border-blue-500 focus:ring-2 focus:ring-blue-100 transition-all"
               />
             </div>
+
+            {/* Auto-Reflect Dropdown */}
+            {showSuggestions && (
+              <div className="absolute left-0 right-0 top-full mt-1.5 bg-white border border-slate-200 rounded-xl shadow-2xl z-50 max-h-60 overflow-y-auto animate-in fade-in slide-in-from-top-1 duration-150">
+                <div className="px-3 py-1.5 border-b border-slate-100 bg-slate-50 text-[11px] font-semibold text-slate-500 uppercase tracking-wider flex items-center justify-between">
+                  <span>Available Staff & Relievers</span>
+                  <span className="text-[10px] lowercase font-normal text-slate-400">Click to auto-fill</span>
+                </div>
+
+                {matchingCandidates.length > 0 ? (
+                  <ul className="divide-y divide-slate-100 py-1" role="listbox">
+                    {matchingCandidates.map((cand, idx) => (
+                      <li
+                        key={`${cand.name}_${cand.branch}_${idx}`}
+                        role="option"
+                        aria-selected={idx === highlightedIndex}
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          handleSelectCandidate(cand);
+                        }}
+                        onMouseEnter={() => setHighlightedIndex(idx)}
+                        className={`px-3 py-2 flex items-center justify-between gap-2.5 cursor-pointer transition-colors ${
+                          idx === highlightedIndex ? 'bg-blue-50 text-blue-900' : 'hover:bg-slate-50 text-slate-800'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <div
+                            className={`w-7 h-7 rounded-full flex items-center justify-center font-bold text-xs shrink-0 ${
+                              cand.isReliever ? 'bg-amber-100 text-amber-800' : 'bg-blue-100 text-blue-700'
+                            }`}
+                          >
+                            {cand.name.slice(0, 2).toUpperCase()}
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-xs font-semibold text-slate-900 truncate">
+                              {cand.name}
+                            </p>
+                            <p className="text-[11px] text-slate-500 truncate flex items-center gap-1.5">
+                              {cand.branch && <span>{cand.branch}</span>}
+                              {cand.branch && cand.role && <span>•</span>}
+                              {cand.role && <span>{cand.role}</span>}
+                            </p>
+                          </div>
+                        </div>
+
+                        <span
+                          className={`text-[10px] px-2 py-0.5 rounded-full font-medium shrink-0 ${
+                            cand.isReliever
+                              ? 'bg-amber-50 text-amber-700 border border-amber-200'
+                              : 'bg-slate-100 text-slate-600'
+                          }`}
+                        >
+                          {cand.isReliever ? 'Reliever' : cand.role || 'Staff'}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <div className="p-3 text-center text-xs text-slate-500">
+                    No registered staff found matching &ldquo;{relieverName}&rdquo;. You can still use this as a custom name.
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* From Branch and Target Branch */}

@@ -558,6 +558,7 @@ export default function AttendanceDashboardPage() {
         onClose={() => setRecordToReplace(null)}
         record={recordToReplace}
         branches={BRANCHES}
+        records={records}
         onAssignReliever={handleAssignReliever}
         isSubmitting={isReplacing}
       />
