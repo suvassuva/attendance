@@ -8,6 +8,7 @@ import {
   deleteDoc,
   onSnapshot,
   query,
+  where,
   orderBy,
   serverTimestamp,
   runTransaction,
@@ -622,6 +623,29 @@ class AttendanceService {
         createdAt: serverTimestamp(),
       }, { merge: true });
 
+      // Automatically remove any previous home-branch record for this same person on this date
+      // so an employee is NEVER duplicated or shown 2 times in the system
+      try {
+        const q = query(
+          collection(db, this.collectionName),
+          where('date', '==', reliever.date)
+        );
+        const existingSnaps = await getDocs(q);
+        for (const d of existingSnaps.docs) {
+          const dData = d.data();
+          const dName = (dData.name || dData.employeeName || '').toLowerCase().trim();
+          if (
+            d.id !== relieverRecordId &&
+            d.id !== absentRecordId &&
+            dName === reliever.relieverName.toLowerCase().trim()
+          ) {
+            await deleteDoc(d.ref);
+          }
+        }
+      } catch (cleanErr) {
+        console.warn('Notice: Previous home branch cleanup check:', cleanErr);
+      }
+
       return {
         absentRecord: {
           ...absentData,
@@ -651,12 +675,12 @@ class AttendanceService {
       }
       relieverData.coveringFor = coveringForName;
 
-      // Remove any existing duplicate for this reliever on this branch & date
+      // Remove any previous record for this reliever on this date so they only appear once
       this.fallbackRecords = this.fallbackRecords.filter(
         (r) =>
           !(
-            r.name.toLowerCase().trim() === reliever.relieverName.toLowerCase().trim() &&
-            r.branch?.toLowerCase().trim() === reliever.toBranch.toLowerCase().trim() &&
+            r.id !== absentRecordId &&
+            (r.name || r.employeeName || '').toLowerCase().trim() === reliever.relieverName.toLowerCase().trim() &&
             r.date === reliever.date
           )
       );

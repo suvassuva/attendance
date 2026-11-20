@@ -132,22 +132,27 @@ export default function AttendanceTable({
   onResetFilters,
   onAddNew,
 }: AttendanceTableProps) {
-  // Guarantee unique items by composite key (name + branch + date) and record ID
+  // Guarantee strictly 1 record per employee per date (no duplicate names on the same day)
   const uniqueRecords = React.useMemo(() => {
-    const seen = new Set<string>();
-    return records.filter((record) => {
-      const nameKey = (record.name || record.employeeName || '').toLowerCase().trim();
-      const branchKey = (record.branch || '').toLowerCase().trim();
-      const dateKey = record.date || '';
-      const compositeKey = `${nameKey}_${branchKey}_${dateKey}`;
+    const personDateMap = new Map<string, Attendance>();
 
-      if (seen.has(compositeKey) || seen.has(record.id)) {
-        return false;
+    records.forEach((record) => {
+      const nameKey = (record.name || record.employeeName || '').toLowerCase().trim();
+      const dateKey = record.date || '';
+      const personKey = `${nameKey}_${dateKey}`;
+
+      const existing = personDateMap.get(personKey);
+      if (!existing) {
+        personDateMap.set(personKey, record);
+      } else {
+        // If an employee was deputed as a reliever, prefer their active reliever duty record
+        if (record.isReliever && !existing.isReliever) {
+          personDateMap.set(personKey, record);
+        }
       }
-      seen.add(compositeKey);
-      seen.add(record.id);
-      return true;
     });
+
+    return Array.from(personDateMap.values());
   }, [records]);
   // Skeleton loading view
   if (isLoading) {
