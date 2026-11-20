@@ -368,9 +368,9 @@ export default function AttendanceTable({
                         <button
                           type="button"
                           onClick={() => onReplace(record)}
-                          title={record.status === 'Absent' ? 'Assign Reliever / Replacement' : 'Replace Staff / Assign Reliever'}
+                          title={record.status === 'Absent' ? `Assign Reliever for ${displayName}` : `Deploy ${displayName} as Reliever`}
                           className="p-1.5 text-slate-400 hover:text-amber-600 hover:bg-amber-50 rounded-md transition-colors cursor-pointer"
-                          aria-label={`Replace or assign reliever for ${displayName}`}
+                          aria-label={`Reliever assignment for ${displayName}`}
                         >
                           <ArrowLeftRight className="w-4 h-4" />
                         </button>
