@@ -24,7 +24,11 @@ function getServerDate() {
   return 'Thursday, Nov 19, 2026';
 }
 
-export default function Header({ onAddClick, searchQuery, onSearchChange }: HeaderProps) {
+export default function Header({
+  onAddClick,
+  searchQuery,
+  onSearchChange,
+}: HeaderProps) {
   // Hydration-safe client date using React standard useSyncExternalStore
   const currentDate = useSyncExternalStore(emptySubscribe, getClientDate, getServerDate);
 
@@ -46,16 +50,11 @@ export default function Header({ onAddClick, searchQuery, onSearchChange }: Head
               <div className="flex items-center gap-1.5 mt-1 text-xs text-slate-500">
                 <Calendar className="w-3.5 h-3.5 text-slate-400" />
                 <span>{currentDate}</span>
-                <span className="text-slate-300">•</span>
-                <span className="inline-flex items-center gap-1 text-emerald-600 font-medium">
-                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                  Live Sync
-                </span>
               </div>
             </div>
           </div>
 
-          {/* Right: Quick Search, Add Button, Profile */}
+          {/* Right: Quick Search, Export, Add Button, Profile */}
           <div className="flex items-center gap-3 flex-wrap sm:flex-nowrap justify-between sm:justify-end">
             {/* Quick Header Search */}
             <div className="relative flex-1 sm:w-64 md:w-72">

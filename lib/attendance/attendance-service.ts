@@ -3,6 +3,7 @@ import {
   doc,
   getDocs,
   getDoc,
+  setDoc,
   updateDoc,
   deleteDoc,
   onSnapshot,
@@ -20,6 +21,7 @@ import {
   AttendanceStats,
   CreateAttendanceDTO,
   UpdateAttendanceDTO,
+  RelieverDetails,
 } from '@/types/attendance';
 import { INITIAL_ATTENDANCE_DATA } from '@/lib/dummy-data';
 import {
@@ -69,7 +71,7 @@ class AttendanceService {
     name: item.name || item.employeeName || 'Unknown Employee',
     checkIn: formatToHHmm(item.checkIn),
     checkOut: formatToHHmm(item.checkOut),
-    createdAt: item.createdAt || new Date('2026-11-19T08:00:00Z').toISOString(),
+    createdAt: item.createdAt || new Date('2026-11-20T08:00:00Z').toISOString(),
   }));
 
   // Local subscription listeners when using fallback mode
@@ -132,13 +134,20 @@ class AttendanceService {
                 name: data.name || '',
                 employeeName: data.name || '',
                 department: data.department || '',
+                branch: data.branch || 'Bannerghatta',
                 date: data.date || '',
                 checkIn: data.checkIn || '--:--',
                 checkOut: data.checkOut || '--:--',
                 status: data.status || 'Present',
                 employeeId: data.employeeId || '',
                 email: data.email || '',
+                role: data.role || '',
                 notes: data.notes || '',
+                isReliever: Boolean(data.isReliever),
+                coveringFor: data.coveringFor || '',
+                relieverName: data.relieverName || '',
+                relieverPhone: data.relieverPhone || '',
+                relieverFromBranch: data.relieverFromBranch || '',
                 createdAt: this.formatCreatedAt(data.createdAt),
               };
             });
@@ -153,7 +162,11 @@ class AttendanceService {
             onUpdate(records);
           },
           (error) => {
-            console.error('Firestore onSnapshot listener error:', error);
+            console.warn('Firestore onSnapshot notice (offline or reconnecting):', error);
+            if ((error as { code?: string }).code === 'unavailable') {
+              // Ensure user sees the Bangalore records while connection re-establishes
+              onUpdate([...this.fallbackRecords]);
+            }
             onError(error);
           }
         );
@@ -194,13 +207,20 @@ class AttendanceService {
             name: data.name || '',
             employeeName: data.name || '',
             department: data.department || '',
+            branch: data.branch || 'Bannerghatta',
             date: data.date || '',
             checkIn: data.checkIn || '--:--',
             checkOut: data.checkOut || '--:--',
             status: data.status || 'Present',
             employeeId: data.employeeId || '',
             email: data.email || '',
+            role: data.role || '',
             notes: data.notes || '',
+            isReliever: Boolean(data.isReliever),
+            coveringFor: data.coveringFor || '',
+            relieverName: data.relieverName || '',
+            relieverPhone: data.relieverPhone || '',
+            relieverFromBranch: data.relieverFromBranch || '',
             createdAt: this.formatCreatedAt(data.createdAt),
           };
         });
@@ -216,6 +236,7 @@ class AttendanceService {
       const fullFilters: AttendanceFiltersState = {
         searchQuery: filters.searchQuery || '',
         department: filters.department || '',
+        branch: filters.branch || '',
         status: filters.status || '',
         date: filters.date || '',
       };
@@ -245,6 +266,7 @@ class AttendanceService {
           name: data.name || '',
           employeeName: data.name || '',
           department: data.department || '',
+          branch: data.branch || 'Bannerghatta',
           date: data.date || '',
           checkIn: data.checkIn || '--:--',
           checkOut: data.checkOut || '--:--',
@@ -298,6 +320,7 @@ class AttendanceService {
         transaction.set(docRef, {
           name: candidateName,
           department: data.department,
+          branch: data.branch || 'Bannerghatta',
           date: data.date.trim(),
           checkIn,
           checkOut,
@@ -314,6 +337,7 @@ class AttendanceService {
         name: candidateName,
         employeeName: candidateName,
         department: data.department,
+        branch: data.branch || 'Bannerghatta',
         date: data.date.trim(),
         checkIn,
         checkOut,
@@ -345,6 +369,7 @@ class AttendanceService {
       employeeId,
       email,
       department: data.department,
+      branch: data.branch || 'Bannerghatta',
       date: data.date.trim(),
       checkIn,
       checkOut,
@@ -405,6 +430,7 @@ class AttendanceService {
       await updateDoc(docRef, {
         name: candidateName,
         department: data.department ?? existing.department,
+        branch: data.branch ?? existing.branch ?? 'Bannerghatta',
         date: candidateDate,
         status: candidateStatus,
         checkIn,
@@ -418,6 +444,8 @@ class AttendanceService {
         ...data,
         name: candidateName,
         employeeName: candidateName,
+        department: data.department ?? existing.department,
+        branch: data.branch ?? existing.branch ?? 'Bannerghatta',
         date: candidateDate,
         status: candidateStatus,
         checkIn,
@@ -444,6 +472,8 @@ class AttendanceService {
       ...data,
       name: candidateName,
       employeeName: candidateName,
+      department: data.department ?? existing.department,
+      branch: data.branch ?? existing.branch ?? 'Bannerghatta',
       date: candidateDate,
       status: candidateStatus,
       checkIn,
@@ -503,6 +533,7 @@ class AttendanceService {
           t.set(docRef, {
             name: record.name,
             department: record.department,
+            branch: record.branch || 'Bannerghatta',
             date: record.date,
             checkIn: isAbsent ? '--:--' : formatToHHmm(record.checkIn),
             checkOut: isAbsent ? '--:--' : formatToHHmm(record.checkOut),
@@ -529,6 +560,118 @@ class AttendanceService {
   }
 
   /**
+   * Assigns a reliever / replacement employee to cover for an absent staff member.
+   */
+  async assignReliever(
+    absentRecordId: string,
+    reliever: RelieverDetails
+  ): Promise<{ absentRecord: Attendance; relieverRecord: Attendance }> {
+    const isLive = this.isLiveFirestore();
+    const cleanRelieverName = reliever.relieverName.toLowerCase().replace(/[^a-z0-9]/g, '_');
+    const cleanBranch = reliever.toBranch.toLowerCase().replace(/[^a-z0-9]/g, '_');
+    const relieverRecordId = `reliever_${reliever.date}_${cleanRelieverName}_${cleanBranch}`;
+    const relieverEmployeeId = `EMP-REL-${Date.now().toString().slice(-4)}`;
+
+    const isABM =
+      reliever.role?.toLowerCase().includes('assistant') ||
+      reliever.role?.toUpperCase() === 'ABM';
+
+    const relieverData: Attendance = {
+      id: relieverRecordId,
+      name: reliever.relieverName,
+      employeeName: reliever.relieverName,
+      department: isABM ? 'ABM' : 'BM',
+      branch: reliever.toBranch,
+      date: reliever.date,
+      checkIn: reliever.checkIn || '09:30',
+      checkOut: reliever.checkOut || '18:30',
+      status: 'Present',
+      role: isABM ? 'Assistant Branch Manager' : 'Branch Manager',
+      employeeId: relieverEmployeeId,
+      email: `${reliever.relieverName.toLowerCase().replace(/[^a-z0-9]/g, '')}@atticagold.com`,
+      notes: reliever.notes || `Covering duties for staff`,
+      isReliever: true,
+      relieverPhone: reliever.relieverPhone || '',
+      relieverFromBranch: reliever.fromBranch,
+      createdAt: new Date().toISOString(),
+    };
+
+    if (isLive && db) {
+      const absentDocRef = doc(db, this.collectionName, absentRecordId);
+      const absentSnap = await getDoc(absentDocRef);
+      if (!absentSnap.exists()) {
+        throw new NotFoundError(`Absent record ${absentRecordId} not found`);
+      }
+      const absentData = absentSnap.data();
+      const absentStaffName = absentData.name || 'Absent Staff';
+      relieverData.coveringFor = absentStaffName;
+
+      // Mark the staff being relieved as Absent (on leave) with full reliever details
+      await updateDoc(absentDocRef, {
+        status: 'Absent',
+        relieverName: reliever.relieverName,
+        relieverPhone: reliever.relieverPhone || '',
+        relieverFromBranch: reliever.fromBranch,
+        notes: `On leave - Covered by Reliever ${reliever.relieverName}`,
+      });
+
+      // Save/update the reliever record (deterministic ID avoids duplicate rows)
+      const relieverDocRef = doc(db, this.collectionName, relieverRecordId);
+      await setDoc(relieverDocRef, {
+        ...relieverData,
+        createdAt: serverTimestamp(),
+      }, { merge: true });
+
+      return {
+        absentRecord: {
+          ...absentData,
+          id: absentRecordId,
+          status: 'Absent',
+          relieverName: reliever.relieverName,
+          relieverPhone: reliever.relieverPhone || '',
+          relieverFromBranch: reliever.fromBranch,
+          notes: `On leave - Covered by Reliever ${reliever.relieverName}`,
+        } as Attendance,
+        relieverRecord: relieverData,
+      };
+    } else {
+      // Local fallback mode
+      const idx = this.fallbackRecords.findIndex((r) => r.id === absentRecordId);
+      let coveringForName = 'Staff';
+      if (idx !== -1) {
+        coveringForName = this.fallbackRecords[idx].name;
+        this.fallbackRecords[idx] = {
+          ...this.fallbackRecords[idx],
+          status: 'Absent',
+          relieverName: reliever.relieverName,
+          relieverPhone: reliever.relieverPhone || '',
+          relieverFromBranch: reliever.fromBranch,
+          notes: `On leave - Covered by Reliever ${reliever.relieverName}`,
+        };
+      }
+      relieverData.coveringFor = coveringForName;
+
+      // Remove any existing duplicate for this reliever on this branch & date
+      this.fallbackRecords = this.fallbackRecords.filter(
+        (r) =>
+          !(
+            r.name.toLowerCase().trim() === reliever.relieverName.toLowerCase().trim() &&
+            r.branch?.toLowerCase().trim() === reliever.toBranch.toLowerCase().trim() &&
+            r.date === reliever.date
+          )
+      );
+
+      this.fallbackRecords.unshift(relieverData);
+      this.notifyLocalListeners();
+
+      return {
+        absentRecord: idx !== -1 ? this.fallbackRecords[idx] : ({} as Attendance),
+        relieverRecord: relieverData,
+      };
+    }
+  }
+
+  /**
    * Searches records matching a query text.
    */
   async searchAttendance(query: string): Promise<Attendance[]> {
@@ -538,6 +681,12 @@ class AttendanceService {
 }
 
 export const attendanceService = new AttendanceService();
+
+// Reusable individual exports
+export const assignReliever = (
+  absentRecordId: string,
+  reliever: RelieverDetails
+) => attendanceService.assignReliever(absentRecordId, reliever);
 
 // Reusable individual exports
 export const subscribeToAttendance = (

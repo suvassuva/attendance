@@ -82,6 +82,12 @@ export default function DeleteConfirmation({
                   <span className="text-slate-500">Department:</span>
                   <span className="font-medium text-slate-700">{record.department}</span>
                 </div>
+                {record.branch && (
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Branch:</span>
+                    <span className="font-medium text-slate-700">{record.branch}</span>
+                  </div>
+                )}
                 <div className="flex justify-between">
                   <span className="text-slate-500">Recorded Status:</span>
                   <span className="font-medium text-slate-700">{record.status}</span>

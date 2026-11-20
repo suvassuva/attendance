@@ -14,12 +14,14 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const searchQuery = searchParams.get('searchQuery') || searchParams.get('q') || '';
     const department = searchParams.get('department') || '';
+    const branch = searchParams.get('branch') || '';
     const status = searchParams.get('status') || '';
     const date = searchParams.get('date') || '';
 
     const records = await attendanceService.getAttendanceRecords({
       searchQuery,
       department,
+      branch,
       status,
       date,
     });

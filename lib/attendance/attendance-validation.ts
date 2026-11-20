@@ -19,7 +19,7 @@ export class AttendanceValidationError extends Error {
 }
 
 /**
- * Validates attendance record payload according to Phase 2 business rules.
+ * Validates attendance record payload according to business rules.
  */
 export function validateAttendance(data: Partial<Attendance>): ValidationResult {
   const errors: ValidationErrors = {};
@@ -38,7 +38,13 @@ export function validateAttendance(data: Partial<Attendance>): ValidationResult 
     errors.department = 'Department is required.';
   }
 
-  // 3. Date
+  // 3. Branch (optional or validated if passed)
+  const branch = (data.branch ?? '').trim();
+  if (!branch) {
+    errors.branch = 'Branch is required.';
+  }
+
+  // 4. Date
   const date = (data.date ?? '').trim();
   if (!date) {
     errors.date = 'Date is required.';
@@ -51,7 +57,7 @@ export function validateAttendance(data: Partial<Attendance>): ValidationResult 
     }
   }
 
-  // 4. Status
+  // 5. Status
   const status = data.status;
   if (!status) {
     errors.status = 'Attendance status is required.';
@@ -59,7 +65,7 @@ export function validateAttendance(data: Partial<Attendance>): ValidationResult 
     errors.status = `Status must be one of: ${VALID_STATUSES.join(', ')}.`;
   }
 
-  // 5, 6, 7. Check-in and Check-out Validation
+  // 6. Check-in and Check-out Validation
   const isAbsent = status === 'Absent';
   const checkIn = (data.checkIn ?? '').trim();
   const checkOut = (data.checkOut ?? '').trim();
@@ -75,8 +81,7 @@ export function validateAttendance(data: Partial<Attendance>): ValidationResult 
       }
     }
 
-    // Check-out time is optional (e.g. employee is currently checked in/in-progress),
-    // but if provided and not empty/--:--, it must be valid and >= check-in
+    // Check-out time is optional, but if provided, must be valid and >= check-in
     if (checkOut && checkOut !== '--:--') {
       const checkOutMinutes = parseTimeToMinutes(checkOut);
       if (checkOutMinutes === null) {
@@ -90,7 +95,6 @@ export function validateAttendance(data: Partial<Attendance>): ValidationResult 
     }
   } else {
     // For Absent employees: check-in/out times are not required.
-    // If times are provided, they must either be empty/--:-- or valid HH:mm
     if (checkIn && checkIn !== '--:--' && parseTimeToMinutes(checkIn) === null) {
       errors.checkIn = 'Check-in time must use HH:mm format or be left empty for absent status.';
     }

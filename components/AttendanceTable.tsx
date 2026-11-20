@@ -8,8 +8,11 @@ import {
   Calendar,
   AlertCircle,
   Building,
+  MapPin,
   RotateCcw,
   Plus,
+  ArrowLeftRight,
+  Phone,
 } from 'lucide-react';
 import { Attendance, AttendanceStatus } from '@/types/attendance';
 import { formatToDisplayTime } from '@/lib/attendance/attendance-utils';
@@ -19,8 +22,38 @@ interface AttendanceTableProps {
   isLoading?: boolean;
   onEdit: (record: Attendance) => void;
   onDelete: (record: Attendance) => void;
+  onReplace?: (record: Attendance) => void;
   onResetFilters?: () => void;
   onAddNew?: () => void;
+}
+
+// Helper to extract full reliever details from fields or notes
+function extractRelieverInfo(record: Attendance) {
+  let phone = record.relieverPhone || '';
+  let fromBranch = record.relieverFromBranch || '';
+  let coveringFor = record.coveringFor || '';
+  let relieverName = record.relieverName || '';
+
+  if (record.notes) {
+    if (!phone) {
+      const phoneMatch = record.notes.match(/Ph(?:one)?:\s*([0-9]{10})/i);
+      if (phoneMatch) phone = phoneMatch[1];
+    }
+    if (!fromBranch) {
+      const fromMatch = record.notes.match(/from\s+([a-zA-Z0-9\s-]+?)(?:,|\)|Ph)/i);
+      if (fromMatch) fromBranch = fromMatch[1].trim();
+    }
+    if (!coveringFor) {
+      const covMatch = record.notes.match(/covering for\s+([a-zA-Z0-9\s-]+?)(?:\(|\)|,|$)/i);
+      if (covMatch) coveringFor = covMatch[1].trim();
+    }
+    if (!relieverName) {
+      const relMatch = record.notes.match(/Reliever:\s*([a-zA-Z0-9\s-]+?)(?:\(|,|$)/i);
+      if (relMatch) relieverName = relMatch[1].trim();
+    }
+  }
+
+  return { phone, fromBranch, coveringFor, relieverName };
 }
 
 // Function to generate deterministic avatar background colors based on employee name
@@ -95,18 +128,24 @@ export default function AttendanceTable({
   isLoading = false,
   onEdit,
   onDelete,
+  onReplace,
   onResetFilters,
   onAddNew,
 }: AttendanceTableProps) {
-  // Guarantee unique items by record ID to prevent duplicate key console errors
+  // Guarantee unique items by composite key (name + branch + date) and record ID
   const uniqueRecords = React.useMemo(() => {
     const seen = new Set<string>();
     return records.filter((record) => {
-      const recordKey = record.id;
-      if (!recordKey || seen.has(recordKey)) {
+      const nameKey = (record.name || record.employeeName || '').toLowerCase().trim();
+      const branchKey = (record.branch || '').toLowerCase().trim();
+      const dateKey = record.date || '';
+      const compositeKey = `${nameKey}_${branchKey}_${dateKey}`;
+
+      if (seen.has(compositeKey) || seen.has(record.id)) {
         return false;
       }
-      seen.add(recordKey);
+      seen.add(compositeKey);
+      seen.add(record.id);
       return true;
     });
   }, [records]);
@@ -188,7 +227,8 @@ export default function AttendanceTable({
           <thead>
             <tr className="bg-slate-50/80 border-b border-slate-200 text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
               <th scope="col" className="py-3.5 px-4 sm:px-6">Employee Name</th>
-              <th scope="col" className="py-3.5 px-4">Department</th>
+              <th scope="col" className="py-3.5 px-4">Role</th>
+              <th scope="col" className="py-3.5 px-4">Branch</th>
               <th scope="col" className="py-3.5 px-4">Date</th>
               <th scope="col" className="py-3.5 px-4">Check In</th>
               <th scope="col" className="py-3.5 px-4">Check Out</th>
@@ -203,6 +243,7 @@ export default function AttendanceTable({
               const initials = getInitials(displayName);
               const displayCheckIn = formatToDisplayTime(record.checkIn);
               const displayCheckOut = formatToDisplayTime(record.checkOut);
+              const relieverInfo = extractRelieverInfo(record);
 
               return (
                 <tr
@@ -218,27 +259,76 @@ export default function AttendanceTable({
                         {initials}
                       </div>
                       <div className="min-w-0">
-                        <p className="font-medium text-slate-900 truncate group-hover:text-blue-600 transition-colors">
-                          {displayName}
-                        </p>
-                        <p className="text-xs text-slate-400 truncate flex items-center gap-1.5">
-                          <span>{record.employeeId || 'N/A'}</span>
-                          {record.email && (
-                            <>
-                              <span>•</span>
-                              <span className="hidden sm:inline">{record.email}</span>
-                            </>
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <p className="font-semibold text-slate-900 truncate group-hover:text-blue-600 transition-colors">
+                            {displayName}
+                          </p>
+                          {record.isReliever && (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-100 text-purple-700 border border-purple-200">
+                              Reliever
+                            </span>
                           )}
-                        </p>
+                          {record.relieverName && (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                              Covered by {record.relieverName}
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Full Reliever & Deputation Details */}
+                        {(record.isReliever || record.relieverName || relieverInfo.fromBranch) && (
+                          <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px]">
+                            {record.isReliever && (
+                              <span className="inline-flex items-center gap-1 font-semibold text-purple-700 bg-purple-50 border border-purple-200 px-2 py-0.5 rounded-md">
+                                <ArrowLeftRight className="w-3 h-3 text-purple-500" />
+                                Covering for: <strong className="font-bold">{relieverInfo.coveringFor || 'Absent Staff'}</strong>
+                              </span>
+                            )}
+                            {record.relieverName && (
+                              <span className="inline-flex items-center gap-1 font-semibold text-emerald-800 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md">
+                                <ArrowLeftRight className="w-3 h-3 text-emerald-600" />
+                                Reliever: <strong className="font-bold">{relieverInfo.relieverName}</strong>
+                              </span>
+                            )}
+                            {relieverInfo.fromBranch && (
+                              <span className="inline-flex items-center gap-1 text-slate-700 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-md">
+                                <MapPin className="w-3 h-3 text-slate-400" />
+                                Deputed from: {relieverInfo.fromBranch}
+                              </span>
+                            )}
+                          </div>
+                        )}
+
+                        {record.notes &&
+                          !record.notes.includes('Replaced by Reliever') &&
+                          !record.notes.includes('Reliever assigned covering') &&
+                          !record.notes.includes('Covered by Reliever') && (
+                            <p className="text-xs text-slate-500 italic max-w-sm truncate mt-0.5" title={record.notes}>
+                              {record.notes}
+                            </p>
+                          )}
                       </div>
                     </div>
                   </td>
 
-                  {/* 2. Department */}
+                  {/* 2. Role / Designation (BM / ABM) */}
                   <td className="py-3.5 px-4 whitespace-nowrap">
-                    <div className="flex items-center gap-1.5 text-xs text-slate-600 font-medium">
-                      <Building className="w-3.5 h-3.5 text-slate-400" />
-                      <span>{record.department}</span>
+                    <span
+                      className={`inline-flex items-center px-2.5 py-0.5 rounded-md text-xs font-bold tracking-wide ${
+                        record.role === 'Assistant Branch Manager' || record.department === 'ABM'
+                          ? 'bg-indigo-50 text-indigo-700 border border-indigo-200'
+                          : 'bg-blue-50 text-blue-700 border border-blue-200'
+                      }`}
+                    >
+                      {record.role === 'Assistant Branch Manager' || record.department === 'ABM' ? 'ABM' : 'BM'}
+                    </span>
+                  </td>
+
+                  {/* 2b. Branch */}
+                  <td className="py-3.5 px-4 whitespace-nowrap">
+                    <div className="flex items-center gap-1.5 text-xs text-slate-600">
+                      <MapPin className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                      <span>{record.branch || 'Bannerghatta'}</span>
                     </div>
                   </td>
 
@@ -274,6 +364,17 @@ export default function AttendanceTable({
                   {/* 7. Actions */}
                   <td className="py-3.5 px-4 sm:px-6 text-right whitespace-nowrap">
                     <div className="flex items-center justify-end gap-1">
+                      {onReplace && (
+                        <button
+                          type="button"
+                          onClick={() => onReplace(record)}
+                          title={record.status === 'Absent' ? 'Assign Reliever / Replacement' : 'Replace Staff / Assign Reliever'}
+                          className="p-1.5 text-slate-400 hover:text-amber-600 hover:bg-amber-50 rounded-md transition-colors cursor-pointer"
+                          aria-label={`Replace or assign reliever for ${displayName}`}
+                        >
+                          <ArrowLeftRight className="w-4 h-4" />
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={() => onEdit(record)}

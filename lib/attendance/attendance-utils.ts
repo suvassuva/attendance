@@ -181,23 +181,52 @@ export function filterAttendanceRecords(
       const recId = (record.employeeId || '').toLowerCase();
       const recEmail = (record.email || '').toLowerCase();
       const recDept = (record.department || '').toLowerCase();
+      const recBranch = (record.branch || '').toLowerCase();
 
       const matched =
-        recName.includes(q) || recId.includes(q) || recEmail.includes(q) || recDept.includes(q);
+        recName.includes(q) ||
+        recId.includes(q) ||
+        recEmail.includes(q) ||
+        recDept.includes(q) ||
+        recBranch.includes(q);
       if (!matched) return false;
     }
 
-    // 2. Department filter
-    if (filters.department && record.department !== filters.department) {
+    // 2. Role / Designation filter (BM & ABM support)
+    if (filters.department) {
+      const selected = filters.department.trim().toUpperCase();
+      const recRole = (record.role || '').toUpperCase();
+      const recDept = (record.department || '').toUpperCase();
+
+      if (selected === 'BM') {
+        const isBM =
+          recDept === 'BM' ||
+          recRole === 'BM' ||
+          recRole === 'BRANCH MANAGER' ||
+          (recRole.includes('BRANCH MANAGER') && !recRole.includes('ASSISTANT'));
+        if (!isBM) return false;
+      } else if (selected === 'ABM') {
+        const isABM =
+          recDept === 'ABM' ||
+          recRole === 'ABM' ||
+          recRole.includes('ASSISTANT');
+        if (!isABM) return false;
+      } else if (record.department !== filters.department && record.role !== filters.department) {
+        return false;
+      }
+    }
+
+    // 3. Branch filter
+    if (filters.branch && record.branch !== filters.branch) {
       return false;
     }
 
-    // 3. Status filter
+    // 4. Status filter
     if (filters.status && record.status !== filters.status) {
       return false;
     }
 
-    // 4. Date filter
+    // 5. Date filter
     if (filters.date && record.date !== filters.date) {
       return false;
     }
@@ -217,7 +246,8 @@ export function searchAttendance(records: Attendance[], query: string): Attendan
     const name = (r.name || r.employeeName || '').toLowerCase();
     const id = (r.employeeId || '').toLowerCase();
     const dept = (r.department || '').toLowerCase();
-    return name.includes(q) || id.includes(q) || dept.includes(q);
+    const branch = (r.branch || '').toLowerCase();
+    return name.includes(q) || id.includes(q) || dept.includes(q) || branch.includes(q);
   });
 }
 
@@ -228,7 +258,7 @@ export function calculateAttendanceStats(
   allRecords: Attendance[],
   targetDate?: string
 ): AttendanceStats {
-  const dateToUse = targetDate || '2026-11-19';
+  const dateToUse = targetDate || '2026-11-20';
 
   // Context records for the specified date
   const contextRecords = targetDate

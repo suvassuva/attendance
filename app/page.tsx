@@ -9,6 +9,7 @@ import {
   CheckCircle2,
   AlertTriangle,
   Sparkles,
+  FileSpreadsheet,
 } from 'lucide-react';
 import Header from '@/components/Header';
 import StatsCard from '@/components/StatsCard';
@@ -16,17 +17,20 @@ import AttendanceFilters from '@/components/AttendanceFilters';
 import AttendanceTable from '@/components/AttendanceTable';
 import AttendanceModal from '@/components/AttendanceModal';
 import DeleteConfirmation from '@/components/DeleteConfirmation';
-import { DEPARTMENTS } from '@/lib/dummy-data';
+import ReplaceEmployeeModal from '@/components/ReplaceEmployeeModal';
+import { DEPARTMENTS, BRANCHES } from '@/lib/dummy-data';
 import {
   Attendance,
   AttendanceFiltersState,
   AttendanceFormData,
+  RelieverDetails,
 } from '@/types/attendance';
 import {
   attendanceService,
   DuplicateAttendanceError,
 } from '@/lib/attendance/attendance-service';
 import { calculateAttendanceStats } from '@/lib/attendance/attendance-utils';
+import { exportAttendanceToExcel } from '@/lib/attendance/excel-export';
 
 export default function AttendanceDashboardPage() {
   // Main attendance records state
@@ -45,8 +49,9 @@ export default function AttendanceDashboardPage() {
   const [filters, setFilters] = useState<AttendanceFiltersState>({
     searchQuery: '',
     department: '',
+    branch: '',
     status: '',
-    date: '2026-11-19', // Default to current date for today's roster
+    date: '2026-11-20', // Default to current date for today's roster
   });
 
   // Modal states
@@ -55,6 +60,10 @@ export default function AttendanceDashboardPage() {
 
   // Delete dialog state
   const [recordToDelete, setRecordToDelete] = useState<Attendance | null>(null);
+
+  // Replace / Reliever state
+  const [recordToReplace, setRecordToReplace] = useState<Attendance | null>(null);
+  const [isReplacing, setIsReplacing] = useState(false);
 
   // Toast notification state
   const [toastMessage, setToastMessage] = useState<{
@@ -84,9 +93,14 @@ export default function AttendanceDashboardPage() {
         setIsLoading(false);
       },
       (error) => {
-        console.error('Realtime Firestore synchronization error:', error);
+        console.warn('Realtime Firestore synchronization status:', error);
         setIsLoading(false);
-        showToast(`Firestore Sync Notice: ${error.message}`, 'error');
+        const isUnavailable = (error as { code?: string })?.code === 'unavailable';
+        if (isUnavailable) {
+          showToast('Operating in offline cache mode. Live records will sync automatically.', 'info');
+        } else {
+          showToast(`Firestore Sync Notice: ${error.message}`, 'error');
+        }
       }
     );
 
@@ -114,6 +128,7 @@ export default function AttendanceDashboardPage() {
     setFilters({
       searchQuery: '',
       department: '',
+      branch: '',
       status: '',
       date: '',
     });
@@ -130,13 +145,25 @@ export default function AttendanceDashboardPage() {
         const id = (record.employeeId || '').toLowerCase();
         const email = (record.email || '').toLowerCase();
         const dept = (record.department || '').toLowerCase();
-        if (!displayName.includes(query) && !id.includes(query) && !email.includes(query) && !dept.includes(query)) {
+        const branch = (record.branch || '').toLowerCase();
+        if (
+          !displayName.includes(query) &&
+          !id.includes(query) &&
+          !email.includes(query) &&
+          !dept.includes(query) &&
+          !branch.includes(query)
+        ) {
           return false;
         }
       }
 
       // 2. Department
       if (filters.department && record.department !== filters.department) {
+        return false;
+      }
+
+      // 2b. Branch
+      if (filters.branch && record.branch !== filters.branch) {
         return false;
       }
 
@@ -176,6 +203,7 @@ export default function AttendanceDashboardPage() {
           name: formData.name,
           employeeName: formData.name,
           department: formData.department,
+          branch: formData.branch,
           date: formData.date,
           checkIn: formData.checkIn,
           checkOut: formData.checkOut,
@@ -192,6 +220,7 @@ export default function AttendanceDashboardPage() {
           name: formData.name,
           employeeName: formData.name,
           department: formData.department,
+          branch: formData.branch,
           date: formData.date,
           checkIn: formData.checkIn,
           checkOut: formData.checkOut,
@@ -239,6 +268,31 @@ export default function AttendanceDashboardPage() {
     }
   };
 
+  // Assign Reliever / Replace Staff handler
+  const handleAssignReliever = async (
+    absentRecordId: string,
+    reliever: RelieverDetails
+  ) => {
+    setIsReplacing(true);
+    try {
+      await attendanceService.assignReliever(absentRecordId, reliever);
+      showToast(
+        `Reliever ${reliever.relieverName} successfully assigned to ${reliever.toBranch}!`,
+        'success'
+      );
+      setRecordToReplace(null);
+    } catch (err: unknown) {
+      console.error('Failed to assign reliever:', err);
+      showToast(
+        `Failed to assign reliever: ${err instanceof Error ? err.message : 'Unknown error'}`,
+        'error'
+      );
+      throw err;
+    } finally {
+      setIsReplacing(false);
+    }
+  };
+
   // Seed sample data helper for Firestore
   const handleSeedFirestore = async () => {
     setIsSeeding(true);
@@ -252,6 +306,16 @@ export default function AttendanceDashboardPage() {
       setIsSeeding(false);
     }
   };
+
+  // Export filtered attendance records to Excel (.xlsx)
+  const handleDownloadExcel = useCallback(() => {
+    const success = exportAttendanceToExcel(filteredRecords, filters.date);
+    if (success) {
+      showToast(`Exported ${filteredRecords.length} records to Excel spreadsheet!`, 'success');
+    } else {
+      showToast('No records available to export.', 'info');
+    }
+  }, [filteredRecords, filters.date, showToast]);
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans">
@@ -293,29 +357,12 @@ export default function AttendanceDashboardPage() {
           </div>
         )}
 
-        {/* Dashboard Title, Database Sync Indicator & Quick Date Presets */}
+        {/* Dashboard Title & Quick Date Presets */}
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div>
-            <div className="flex items-center gap-2.5">
-              <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">
-                Overview & Analytics
-              </h2>
-              {/* Firestore Real-Time Sync Indicator */}
-              <span
-                className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium border ${
-                  isLiveFirestore
-                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                    : 'bg-blue-50 text-blue-700 border-blue-200'
-                }`}
-              >
-                <span
-                  className={`w-1.5 h-1.5 rounded-full ${
-                    isLiveFirestore ? 'bg-emerald-500 animate-pulse' : 'bg-blue-500'
-                  }`}
-                />
-                {isLiveFirestore ? 'Firestore Real-Time Sync' : 'Local Fallback Mode'}
-              </span>
-            </div>
+            <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">
+              Overview & Analytics
+            </h2>
             <p className="text-xs sm:text-sm text-slate-500 mt-0.5">
               Real-time monitoring of team attendance, punctuality, and daily leaves.
             </p>
@@ -338,9 +385,9 @@ export default function AttendanceDashboardPage() {
             <div className="flex items-center gap-1.5 bg-white p-1 rounded-lg border border-slate-200 text-xs shadow-xs self-start sm:self-auto">
               <button
                 type="button"
-                onClick={() => handleFilterChange('date', '2026-11-19')}
+                onClick={() => handleFilterChange('date', '2026-11-20')}
                 className={`px-3 py-1.5 rounded-md font-medium transition-all cursor-pointer ${
-                  filters.date === '2026-11-19'
+                  filters.date === '2026-11-20'
                     ? 'bg-blue-600 text-white shadow-xs'
                     : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
                 }`}
@@ -349,9 +396,9 @@ export default function AttendanceDashboardPage() {
               </button>
               <button
                 type="button"
-                onClick={() => handleFilterChange('date', '2026-11-18')}
+                onClick={() => handleFilterChange('date', '2026-11-19')}
                 className={`px-3 py-1.5 rounded-md font-medium transition-all cursor-pointer ${
-                  filters.date === '2026-11-18'
+                  filters.date === '2026-11-19'
                     ? 'bg-blue-600 text-white shadow-xs'
                     : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
                 }`}
@@ -381,10 +428,13 @@ export default function AttendanceDashboardPage() {
               title="Total Employees"
               label="Total Employees"
               value={kpiStats.totalEmployees}
-              description={`${DEPARTMENTS.length} active departments`}
+              description="BM & ABM across 54 Branches"
               icon={Users}
               variant="blue"
               badgeText="Active"
+              isActive={filters.status === ''}
+              onClick={() => handleFilterChange('status', '')}
+              tooltip="Click to view all employees"
             />
 
             {/* 2. Present Today */}
@@ -396,6 +446,9 @@ export default function AttendanceDashboardPage() {
               icon={UserCheck}
               variant="green"
               badgeText="On duty"
+              isActive={filters.status === 'Present'}
+              onClick={() => handleFilterChange('status', filters.status === 'Present' ? '' : 'Present')}
+              tooltip="Click to filter Present staff"
             />
 
             {/* 3. Late Today */}
@@ -407,6 +460,9 @@ export default function AttendanceDashboardPage() {
               icon={Clock}
               variant="amber"
               badgeText="Delayed"
+              isActive={filters.status === 'Late'}
+              onClick={() => handleFilterChange('status', filters.status === 'Late' ? '' : 'Late')}
+              tooltip="Click to filter Late staff"
             />
 
             {/* 4. Absent Today */}
@@ -418,6 +474,9 @@ export default function AttendanceDashboardPage() {
               icon={UserX}
               variant="red"
               badgeText="Unavailable"
+              isActive={filters.status === 'Absent'}
+              onClick={() => handleFilterChange('status', filters.status === 'Absent' ? '' : 'Absent')}
+              tooltip="Click to filter Absent staff on leave"
             />
           </div>
         </section>
@@ -429,6 +488,7 @@ export default function AttendanceDashboardPage() {
             onFilterChange={handleFilterChange}
             onResetFilters={handleResetFilters}
             departments={DEPARTMENTS}
+            branches={BRANCHES}
             totalResults={filteredRecords.length}
             totalRecords={records.length}
           />
@@ -436,13 +496,25 @@ export default function AttendanceDashboardPage() {
 
         {/* 4. Attendance Table Section */}
         <section aria-label="Attendance Records Table" className="space-y-3">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-slate-800">
-              Employee Attendance Log
-            </h3>
-            <span className="text-xs text-slate-500">
-              {filters.date ? `Showing records for ${filters.date}` : 'Showing all historic records'}
-            </span>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-semibold text-slate-800">
+                Employee Attendance Log
+              </h3>
+              <span className="text-xs text-slate-500">
+                {filters.date ? `Showing records for ${filters.date}` : 'Showing all historic records'} • {filteredRecords.length} records
+              </span>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleDownloadExcel}
+              className="inline-flex items-center justify-center gap-2 px-3.5 py-1.5 text-xs sm:text-sm font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-lg shadow-2xs transition-all cursor-pointer active:scale-95 self-start sm:self-auto"
+              title="Download records as Excel spreadsheet (.xlsx)"
+            >
+              <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+              <span>Download Excel</span>
+            </button>
           </div>
 
           <AttendanceTable
@@ -450,6 +522,7 @@ export default function AttendanceDashboardPage() {
             isLoading={isLoading}
             onEdit={handleOpenEditModal}
             onDelete={handlePromptDelete}
+            onReplace={(record) => setRecordToReplace(record)}
             onResetFilters={handleResetFilters}
             onAddNew={handleOpenAddModal}
           />
@@ -466,6 +539,7 @@ export default function AttendanceDashboardPage() {
         onSave={handleSaveAttendance}
         initialData={editingRecord}
         departments={DEPARTMENTS}
+        branches={BRANCHES}
         isSubmitting={isSaving}
       />
 
@@ -476,6 +550,16 @@ export default function AttendanceDashboardPage() {
         onConfirm={handleConfirmDelete}
         record={recordToDelete}
         isDeleting={isDeleting}
+      />
+
+      {/* 7. Replace Employee / Assign Reliever Modal */}
+      <ReplaceEmployeeModal
+        isOpen={Boolean(recordToReplace)}
+        onClose={() => setRecordToReplace(null)}
+        record={recordToReplace}
+        branches={BRANCHES}
+        onAssignReliever={handleAssignReliever}
+        isSubmitting={isReplacing}
       />
     </div>
   );

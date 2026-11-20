@@ -1,8 +1,8 @@
 'use client';
 
 import React from 'react';
-import { Search, Filter, RotateCcw, Calendar, Building2, UserCheck } from 'lucide-react';
-import { AttendanceFiltersState, AttendanceStatus, Department } from '@/types/attendance';
+import { Search, Filter, RotateCcw, Calendar, Building2, UserCheck, MapPin } from 'lucide-react';
+import { AttendanceFiltersState, AttendanceStatus, Department, Branch } from '@/types/attendance';
 
 interface AttendanceFiltersProps {
   filters: AttendanceFiltersState;
@@ -12,6 +12,7 @@ interface AttendanceFiltersProps {
   ) => void;
   onResetFilters: () => void;
   departments: Department[];
+  branches: Branch[];
   totalResults: number;
   totalRecords: number;
 }
@@ -23,12 +24,14 @@ export default function AttendanceFilters({
   onFilterChange,
   onResetFilters,
   departments,
+  branches,
   totalResults,
   totalRecords,
 }: AttendanceFiltersProps) {
   const isFiltered =
     Boolean(filters.searchQuery) ||
     Boolean(filters.department) ||
+    Boolean(filters.branch) ||
     Boolean(filters.status) ||
     Boolean(filters.date);
 
@@ -57,7 +60,7 @@ export default function AttendanceFilters({
       </div>
 
       {/* Filter Controls Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3.5">
         {/* 1. Search by employee name or ID */}
         <div>
           <label className="block text-xs font-medium text-slate-600 mb-1.5">
@@ -69,35 +72,54 @@ export default function AttendanceFilters({
               type="text"
               value={filters.searchQuery}
               onChange={(e) => onFilterChange('searchQuery', e.target.value)}
-              placeholder="e.g. Sarah Jenkins or EMP-1001"
+              placeholder="Search employee name..."
               className="w-full pl-9 pr-3 py-2 text-xs sm:text-sm bg-slate-50 border border-slate-200 rounded-lg text-slate-800 placeholder-slate-400 focus:outline-hidden focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-100 transition-all"
             />
           </div>
         </div>
 
-        {/* 2. Filter by department */}
+        {/* 2. Filter by role (BM / ABM only) */}
         <div>
           <label className="block text-xs font-medium text-slate-600 mb-1.5">
-            Department
+            Role / Designation
           </label>
           <div className="relative">
             <Building2 className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
             <select
               value={filters.department}
               onChange={(e) => onFilterChange('department', e.target.value)}
+              className="w-full pl-9 pr-3 py-2 text-xs sm:text-sm bg-slate-50 border border-slate-200 rounded-lg text-slate-800 focus:outline-hidden focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-100 transition-all cursor-pointer font-medium"
+            >
+              <option value="">All Roles (BM & ABM)</option>
+              <option value="BM">BM (Branch Manager)</option>
+              <option value="ABM">ABM (Assistant Branch Manager)</option>
+            </select>
+          </div>
+        </div>
+
+        {/* 3. Filter by branch */}
+        <div>
+          <label className="block text-xs font-medium text-slate-600 mb-1.5">
+            Branch / Location
+          </label>
+          <div className="relative">
+            <MapPin className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <select
+              value={filters.branch}
+              onChange={(e) => onFilterChange('branch', e.target.value)}
               className="w-full pl-9 pr-3 py-2 text-xs sm:text-sm bg-slate-50 border border-slate-200 rounded-lg text-slate-800 focus:outline-hidden focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-100 transition-all cursor-pointer"
             >
-              <option value="">All Departments</option>
-              {departments.map((dept) => (
-                <option key={dept} value={dept}>
-                  {dept}
+              <option value="">All Branches</option>
+              {branches.map((br) => (
+                <option key={br} value={br}>
+                  {br}
                 </option>
               ))}
             </select>
           </div>
         </div>
 
-        {/* 3. Filter by attendance status */}
+        {/* 4. Filter by attendance status */}
         <div>
           <label className="block text-xs font-medium text-slate-600 mb-1.5">
             Attendance Status
@@ -119,7 +141,7 @@ export default function AttendanceFilters({
           </div>
         </div>
 
-        {/* 4. Date picker */}
+        {/* 5. Date picker */}
         <div>
           <div className="flex items-center justify-between mb-1.5">
             <label className="block text-xs font-medium text-slate-600">

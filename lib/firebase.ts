@@ -1,5 +1,5 @@
 import { initializeApp, getApps, getApp, FirebaseApp } from 'firebase/app';
-import { getFirestore, Firestore } from 'firebase/firestore';
+import { initializeFirestore, getFirestore, Firestore } from 'firebase/firestore';
 
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
@@ -24,6 +24,21 @@ export function isFirebaseConfigured(): boolean {
 }
 
 /**
+ * Initializes Firestore with auto-detecting long-polling.
+ * This fixes the "Could not reach Cloud Firestore backend [code=unavailable]" error
+ * caused by WebChannel streams being blocked by proxies/firewalls.
+ */
+function createFirestoreInstance(targetApp: FirebaseApp): Firestore {
+  try {
+    return initializeFirestore(targetApp, {
+      experimentalAutoDetectLongPolling: true,
+    });
+  } catch {
+    return getFirestore(targetApp);
+  }
+}
+
+/**
  * Initializes the Firebase application only once across existing instances.
  */
 let app: FirebaseApp | undefined;
@@ -32,11 +47,22 @@ let db: Firestore | undefined;
 if (isFirebaseConfigured()) {
   try {
     app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
-    db = getFirestore(app);
+    db = createFirestoreInstance(app);
   } catch (error) {
     console.error('Firebase initialization error:', error);
   }
 }
 
-export { app, db, firebaseConfig };
+export function getDb(): Firestore | undefined {
+  if (!db && isFirebaseConfigured()) {
+    try {
+      app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
+      db = createFirestoreInstance(app);
+    } catch (error) {
+      console.error('Firebase initialization error:', error);
+    }
+  }
+  return db;
+}
 
+export { app, db, firebaseConfig };
