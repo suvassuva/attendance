@@ -12,6 +12,7 @@ import {
   orderBy,
   serverTimestamp,
   runTransaction,
+  writeBatch,
   Timestamp,
   Unsubscribe,
 } from 'firebase/firestore';
@@ -24,7 +25,7 @@ import {
   UpdateAttendanceDTO,
   RelieverDetails,
 } from '@/types/attendance';
-import { INITIAL_ATTENDANCE_DATA } from '@/lib/dummy-data';
+import { INITIAL_ATTENDANCE_DATA, generateRosterForDate } from '@/lib/dummy-data';
 import {
   checkDuplicateAttendance,
   calculateAttendanceStats,
@@ -74,6 +75,19 @@ class AttendanceService {
     checkOut: formatToHHmm(item.checkOut),
     createdAt: item.createdAt || new Date('2026-11-20T08:00:00Z').toISOString(),
   }));
+
+  constructor() {
+    this.ensureTodayRosterInMemory();
+  }
+
+  private ensureTodayRosterInMemory() {
+    const today = new Date().toISOString().split('T')[0];
+    const hasToday = this.fallbackRecords.some((r) => r.date === today);
+    if (!hasToday) {
+      const todayRecords = generateRosterForDate(today);
+      this.fallbackRecords = [...this.fallbackRecords, ...todayRecords];
+    }
+  }
 
   // Local subscription listeners when using fallback mode
   private localListeners: Set<(records: Attendance[]) => void> = new Set();
@@ -161,6 +175,13 @@ class AttendanceService {
             });
 
             onUpdate(records);
+
+            // If today has no records in Firestore, automatically populate today's roster
+            const today = new Date().toISOString().split('T')[0];
+            const hasToday = records.some((r) => r.date === today);
+            if (!hasToday) {
+              this.ensureRosterForDate(today).catch(console.warn);
+            }
           },
           (error) => {
             console.warn('Firestore onSnapshot notice (offline or reconnecting):', error);
@@ -181,6 +202,7 @@ class AttendanceService {
     }
 
     // 2. Fallback in-memory subscription for local development or demo
+    this.ensureTodayRosterInMemory();
     this.localListeners.add(onUpdate);
     onUpdate([...this.fallbackRecords]);
 
@@ -553,6 +575,220 @@ class AttendanceService {
   }
 
   /**
+   * Ensures all 62 employees in the master roster are populated for the specified date.
+   * If some employees (or a test employee) already exist, it fills in any missing employees.
+   */
+  async ensureRosterForDate(targetDate: string): Promise<{ count: number }> {
+    const isLive = this.isLiveFirestore();
+    const roster = generateRosterForDate(targetDate);
+    let addedCount = 0;
+
+    if (isLive && db) {
+      try {
+        const attendanceRef = collection(db, this.collectionName);
+        const q = query(attendanceRef, where('date', '==', targetDate));
+        const snap = await getDocs(q);
+
+        // Map existing employees by normalized name or employeeId
+        const existingSet = new Set<string>();
+        snap.docs.forEach((docSnap) => {
+          const d = docSnap.data();
+          const name = (d.name || '').toLowerCase().trim();
+          const empId = (d.employeeId || '').toLowerCase().trim();
+          if (name) existingSet.add(name);
+          if (empId) existingSet.add(empId);
+        });
+
+        for (const record of roster) {
+          const nameKey = record.name.toLowerCase().trim();
+          const empIdKey = (record.employeeId || '').toLowerCase().trim();
+
+          // Only create if this employee isn't recorded for this date yet
+          if (!existingSet.has(nameKey) && !existingSet.has(empIdKey)) {
+            const docId = generateDeterministicDocId(record.name, targetDate, record.employeeId);
+            const docRef = doc(db, this.collectionName, docId);
+            await setDoc(docRef, {
+              name: record.name,
+              department: record.department,
+              branch: record.branch || 'Bannerghatta',
+              date: targetDate,
+              checkIn: record.checkIn,
+              checkOut: record.checkOut,
+              status: record.status,
+              employeeId: record.employeeId,
+              email: record.email,
+              role: record.role,
+              notes: record.notes || 'On-Duty regular hours',
+              createdAt: serverTimestamp(),
+            });
+            addedCount++;
+          }
+        }
+        return { count: snap.size + addedCount };
+      } catch (err) {
+        console.warn('Failed to ensure roster in Firestore, falling back to local:', err);
+      }
+    }
+
+    // In-memory fallback
+    const existingSet = new Set<string>();
+    this.fallbackRecords
+      .filter((r) => r.date === targetDate)
+      .forEach((r) => {
+        const name = (r.name || r.employeeName || '').toLowerCase().trim();
+        const empId = (r.employeeId || '').toLowerCase().trim();
+        if (name) existingSet.add(name);
+        if (empId) existingSet.add(empId);
+      });
+
+    const missingRecords = roster.filter((r) => {
+      const nameKey = r.name.toLowerCase().trim();
+      const empIdKey = (r.employeeId || '').toLowerCase().trim();
+      return !existingSet.has(nameKey) && !existingSet.has(empIdKey);
+    });
+
+    if (missingRecords.length > 0) {
+      this.fallbackRecords = [...this.fallbackRecords, ...missingRecords];
+      this.notifyLocalListeners();
+      addedCount = missingRecords.length;
+    }
+
+    const totalForDate = this.fallbackRecords.filter((r) => r.date === targetDate).length;
+    return { count: totalForDate };
+  }
+
+  /**
+   * Resets auto-seeded records for a date from Present to Pending so that Present Today starts at 0,
+   * matching real-world workflow where presence is only marked via Edit or Excel upload.
+   */
+  async resetUnverifiedToPending(targetDate: string): Promise<number> {
+    const isLive = this.isLiveFirestore();
+    let updatedCount = 0;
+
+    if (isLive && db) {
+      try {
+        const attendanceRef = collection(db, this.collectionName);
+        const q = query(attendanceRef, where('date', '==', targetDate));
+        const snap = await getDocs(q);
+        const batch = writeBatch(db);
+
+        snap.docs.forEach((docSnap) => {
+          const d = docSnap.data();
+          const name = (d.name || '').toLowerCase().trim();
+          // Reset only auto-generated records that are falsely marked Present before verification
+          if (
+            d.status === 'Present' &&
+            name !== 'test' &&
+            !d.isReliever &&
+            !d.relieverName
+          ) {
+            batch.update(docSnap.ref, {
+              status: 'Pending',
+              checkIn: '--:--',
+              checkOut: '--:--',
+              notes: 'Pending attendance marking / Excel upload',
+            });
+            updatedCount++;
+          }
+        });
+
+        if (updatedCount > 0) {
+          await batch.commit();
+        }
+        return updatedCount;
+      } catch (err) {
+        console.warn('resetUnverifiedToPending error:', err);
+      }
+    }
+
+    // In-memory fallback
+    this.fallbackRecords = this.fallbackRecords.map((r) => {
+      const name = (r.name || r.employeeName || '').toLowerCase().trim();
+      if (
+        r.date === targetDate &&
+        r.status === 'Present' &&
+        name !== 'test' &&
+        !r.isReliever &&
+        !r.relieverName
+      ) {
+        updatedCount++;
+        return {
+          ...r,
+          status: 'Pending',
+          checkIn: '--:--',
+          checkOut: '--:--',
+          notes: 'Pending attendance marking / Excel upload',
+        };
+      }
+      return r;
+    });
+
+    if (updatedCount > 0) {
+      this.notifyLocalListeners();
+    }
+
+    return updatedCount;
+  }
+
+  /**
+   * Bulk imports attendance records from an Excel / CSV upload.
+   * Efficiently upserts all records into Firestore using writeBatch or local fallback.
+   */
+  async bulkImportAttendance(records: Attendance[]): Promise<{ count: number }> {
+    if (records.length === 0) return { count: 0 };
+
+    const isLive = this.isLiveFirestore();
+    if (isLive && db) {
+      const batch = writeBatch(db);
+      for (const rec of records) {
+        const docId = generateDeterministicDocId(rec.name, rec.date, rec.employeeId);
+        const docRef = doc(db, this.collectionName, docId);
+        batch.set(
+          docRef,
+          {
+            name: rec.name,
+            department: rec.department,
+            branch: rec.branch,
+            date: rec.date,
+            checkIn: rec.checkIn,
+            checkOut: rec.checkOut,
+            status: rec.status,
+            employeeId: rec.employeeId,
+            email: rec.email,
+            role: rec.role,
+            notes: rec.notes || '',
+            isReliever: Boolean(rec.isReliever),
+            relieverName: rec.relieverName || '',
+            relieverPhone: rec.relieverPhone || '',
+            relieverFromBranch: rec.relieverFromBranch || '',
+            coveringFor: rec.coveringFor || '',
+            createdAt: serverTimestamp(),
+          },
+          { merge: true }
+        );
+      }
+      await batch.commit();
+      return { count: records.length };
+    }
+
+    // In-memory fallback
+    const incomingMap = new Map<string, Attendance>();
+    records.forEach((r) => {
+      const key = `${r.name.toLowerCase().trim()}_${r.date}`;
+      incomingMap.set(key, r);
+    });
+
+    const updatedFallback = this.fallbackRecords.filter((r) => {
+      const key = `${(r.name || r.employeeName || '').toLowerCase().trim()}_${r.date}`;
+      return !incomingMap.has(key);
+    });
+
+    this.fallbackRecords = [...records, ...updatedFallback];
+    this.notifyLocalListeners();
+    return { count: records.length };
+  }
+
+  /**
    * Computes statistics dynamically.
    */
   async calculateStatistics(targetDate?: string): Promise<AttendanceStats> {
@@ -735,3 +971,12 @@ export const deleteAttendance = (id: string) =>
 
 export const calculateAttendanceStatistics = (targetDate?: string) =>
   attendanceService.calculateStatistics(targetDate);
+
+export const ensureRosterForDate = (targetDate: string) =>
+  attendanceService.ensureRosterForDate(targetDate);
+
+export const bulkImportAttendance = (records: Attendance[]) =>
+  attendanceService.bulkImportAttendance(records);
+
+export const resetUnverifiedToPending = (targetDate: string) =>
+  attendanceService.resetUnverifiedToPending(targetDate);

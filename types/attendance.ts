@@ -2,7 +2,8 @@ export type AttendanceStatus =
   | 'Present'
   | 'Late'
   | 'Half-Day'
-  | 'Absent';
+  | 'Absent'
+  | 'Pending';
 
 export type Department =
   | 'BM'

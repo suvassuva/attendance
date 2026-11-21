@@ -10,6 +10,7 @@ import {
   AlertTriangle,
   Sparkles,
   FileSpreadsheet,
+  Upload,
 } from 'lucide-react';
 import Header from '@/components/Header';
 import StatsCard from '@/components/StatsCard';
@@ -18,6 +19,7 @@ import AttendanceTable from '@/components/AttendanceTable';
 import AttendanceModal from '@/components/AttendanceModal';
 import DeleteConfirmation from '@/components/DeleteConfirmation';
 import ReplaceEmployeeModal from '@/components/ReplaceEmployeeModal';
+import ImportExcelModal from '@/components/ImportExcelModal';
 import { DEPARTMENTS, BRANCHES } from '@/lib/dummy-data';
 import {
   Attendance,
@@ -45,13 +47,37 @@ export default function AttendanceDashboardPage() {
   // Live Firestore detection
   const isLiveFirestore = attendanceService.isLiveFirestore();
 
-  // Filter state
+  // Stable default date for prerendering (avoids Next.js prerender timing error)
+  const [todayStr, setTodayStr] = useState('2026-11-21');
+  const [yesterdayStr, setYesterdayStr] = useState('2026-11-20');
+
+  // Defer client date evaluation to useEffect
+  useEffect(() => {
+    const d = new Date();
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    const clientToday = `${year}-${month}-${day}`;
+
+    const yd = new Date();
+    yd.setDate(yd.getDate() - 1);
+    const yYear = yd.getFullYear();
+    const yMonth = String(yd.getMonth() + 1).padStart(2, '0');
+    const yDay = String(yd.getDate()).padStart(2, '0');
+    const clientYesterday = `${yYear}-${yMonth}-${yDay}`;
+
+    setTodayStr(clientToday);
+    setYesterdayStr(clientYesterday);
+    setFilters((prev) => (prev.date === '2026-11-21' ? { ...prev, date: clientToday } : prev));
+  }, []);
+
+  // Filter state - default to today's date
   const [filters, setFilters] = useState<AttendanceFiltersState>({
     searchQuery: '',
     department: '',
     branch: '',
     status: '',
-    date: '2026-11-20', // Default to current date for today's roster
+    date: '2026-11-21',
   });
 
   // Modal states
@@ -64,6 +90,9 @@ export default function AttendanceDashboardPage() {
   // Replace / Reliever state
   const [recordToReplace, setRecordToReplace] = useState<Attendance | null>(null);
   const [isReplacing, setIsReplacing] = useState(false);
+
+  // Import Excel modal state
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
 
   // Toast notification state
   const [toastMessage, setToastMessage] = useState<{
@@ -109,6 +138,38 @@ export default function AttendanceDashboardPage() {
       unsubscribe();
     };
   }, [showToast]);
+
+  // Auto-populate all 62 employees for today if any are missing
+  useEffect(() => {
+    if (!isLoading) {
+      const todayCount = records.filter((r) => r.date === todayStr).length;
+      if (todayCount < 60) {
+        attendanceService.ensureRosterForDate(todayStr).catch((err) => {
+          console.warn('Auto roster generation notice:', err);
+        });
+      }
+    }
+  }, [isLoading, records, todayStr]);
+
+  // Reset unverified auto-generated records to Pending so Present Today starts at 0 until verified
+  useEffect(() => {
+    if (!isLoading && records.length > 0) {
+      const unverifiedPresentCount = records.filter(
+        (r) =>
+          r.date === todayStr &&
+          r.status === 'Present' &&
+          (r.name || '').toLowerCase() !== 'test' &&
+          !r.isReliever &&
+          r.notes?.includes('On-Duty regular hours')
+      ).length;
+
+      if (unverifiedPresentCount > 0) {
+        attendanceService.resetUnverifiedToPending(todayStr).catch((err) => {
+          console.warn('Auto reset unverified notice:', err);
+        });
+      }
+    }
+  }, [isLoading, records, todayStr]);
 
   // Update KPI statistics automatically whenever records or target date changes
   const kpiStats = useMemo(() => {
@@ -307,6 +368,25 @@ export default function AttendanceDashboardPage() {
     }
   };
 
+  // Initialize full 62 employee roster for any date
+  const handleInitializeRoster = async (targetDate?: string) => {
+    const dateToInit = targetDate || filters.date || todayStr;
+    setIsSaving(true);
+    try {
+      const res = await attendanceService.ensureRosterForDate(dateToInit);
+      showToast(`Successfully initialized roster for ${dateToInit} (${res.count} employees)!`, 'success');
+      if (!isLiveFirestore) {
+        const all = await attendanceService.getAttendanceRecords();
+        setRecords(all);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to initialize roster';
+      showToast(msg, 'error');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
   // Export filtered attendance records to Excel (.xlsx)
   const handleDownloadExcel = useCallback(() => {
     const success = exportAttendanceToExcel(filteredRecords, filters.date);
@@ -317,14 +397,27 @@ export default function AttendanceDashboardPage() {
     }
   }, [filteredRecords, filters.date, showToast]);
 
+  // Import attendance records from Excel / CSV upload
+  const handleImportExcel = async (importedRecords: Attendance[], targetDate: string) => {
+    try {
+      const res = await attendanceService.bulkImportAttendance(importedRecords);
+      showToast(`Successfully imported ${res.count} attendance records for ${targetDate}!`, 'success');
+      setFilters((prev) => ({ ...prev, date: targetDate }));
+      if (!isLiveFirestore) {
+        const all = await attendanceService.getAttendanceRecords();
+        setRecords(all);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to import attendance records';
+      showToast(msg, 'error');
+      throw err;
+    }
+  };
+
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans">
       {/* 1. Header */}
-      <Header
-        onAddClick={handleOpenAddModal}
-        searchQuery={filters.searchQuery}
-        onSearchChange={(val) => handleFilterChange('searchQuery', val)}
-      />
+      <Header onAddClick={handleOpenAddModal} />
 
       {/* Main Container */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
@@ -382,12 +475,24 @@ export default function AttendanceDashboardPage() {
               </button>
             )}
 
+            {filteredRecords.length < 50 && filters.date && (
+              <button
+                type="button"
+                onClick={() => handleInitializeRoster(filters.date)}
+                disabled={isSaving}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100 transition-colors cursor-pointer shadow-2xs"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-blue-600" />
+                <span>{isSaving ? 'Loading Team...' : `Load Full Team Roster (62 Staff)`}</span>
+              </button>
+            )}
+
             <div className="flex items-center gap-1.5 bg-white p-1 rounded-lg border border-slate-200 text-xs shadow-xs self-start sm:self-auto">
               <button
                 type="button"
-                onClick={() => handleFilterChange('date', '2026-11-20')}
+                onClick={() => handleFilterChange('date', todayStr)}
                 className={`px-3 py-1.5 rounded-md font-medium transition-all cursor-pointer ${
-                  filters.date === '2026-11-20'
+                  filters.date === todayStr
                     ? 'bg-blue-600 text-white shadow-xs'
                     : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
                 }`}
@@ -396,9 +501,9 @@ export default function AttendanceDashboardPage() {
               </button>
               <button
                 type="button"
-                onClick={() => handleFilterChange('date', '2026-11-19')}
+                onClick={() => handleFilterChange('date', yesterdayStr)}
                 className={`px-3 py-1.5 rounded-md font-medium transition-all cursor-pointer ${
-                  filters.date === '2026-11-19'
+                  filters.date === yesterdayStr
                     ? 'bg-blue-600 text-white shadow-xs'
                     : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
                 }`}
@@ -506,15 +611,27 @@ export default function AttendanceDashboardPage() {
               </span>
             </div>
 
-            <button
-              type="button"
-              onClick={handleDownloadExcel}
-              className="inline-flex items-center justify-center gap-2 px-3.5 py-1.5 text-xs sm:text-sm font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-lg shadow-2xs transition-all cursor-pointer active:scale-95 self-start sm:self-auto"
-              title="Download records as Excel spreadsheet (.xlsx)"
-            >
-              <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
-              <span>Download Excel</span>
-            </button>
+            <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
+              <button
+                type="button"
+                onClick={() => setIsImportModalOpen(true)}
+                className="inline-flex items-center justify-center gap-2 px-3.5 py-1.5 text-xs sm:text-sm font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg shadow-2xs transition-all cursor-pointer active:scale-95"
+                title="Upload and import attendance from an Excel (.xlsx, .xls) or CSV file"
+              >
+                <Upload className="w-4 h-4 text-blue-600" />
+                <span>Import Excel</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleDownloadExcel}
+                className="inline-flex items-center justify-center gap-2 px-3.5 py-1.5 text-xs sm:text-sm font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-lg shadow-2xs transition-all cursor-pointer active:scale-95"
+                title="Download records as Excel spreadsheet (.xlsx)"
+              >
+                <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+                <span>Download Excel</span>
+              </button>
+            </div>
           </div>
 
           <AttendanceTable
@@ -525,6 +642,8 @@ export default function AttendanceDashboardPage() {
             onReplace={(record) => setRecordToReplace(record)}
             onResetFilters={handleResetFilters}
             onAddNew={handleOpenAddModal}
+            onInitializeRoster={() => handleInitializeRoster(filters.date || todayStr)}
+            activeDate={filters.date}
           />
         </section>
       </main>
@@ -561,6 +680,14 @@ export default function AttendanceDashboardPage() {
         records={records}
         onAssignReliever={handleAssignReliever}
         isSubmitting={isReplacing}
+      />
+
+      {/* 8. Import Excel Modal */}
+      <ImportExcelModal
+        isOpen={isImportModalOpen}
+        onClose={() => setIsImportModalOpen(false)}
+        onImportConfirm={handleImportExcel}
+        defaultDate={filters.date || todayStr}
       />
     </div>
   );

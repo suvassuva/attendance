@@ -1,12 +1,10 @@
 'use client';
 
 import React, { useSyncExternalStore } from 'react';
-import { Plus, Search, Calendar, Bell } from 'lucide-react';
+import { Plus, Calendar, Bell } from 'lucide-react';
 
 interface HeaderProps {
   onAddClick: () => void;
-  searchQuery: string;
-  onSearchChange: (value: string) => void;
 }
 
 const emptySubscribe = () => () => {};
@@ -24,11 +22,7 @@ function getServerDate() {
   return 'Thursday, Nov 19, 2026';
 }
 
-export default function Header({
-  onAddClick,
-  searchQuery,
-  onSearchChange,
-}: HeaderProps) {
+export default function Header({ onAddClick }: HeaderProps) {
   // Hydration-safe client date using React standard useSyncExternalStore
   const currentDate = useSyncExternalStore(emptySubscribe, getClientDate, getServerDate);
 
@@ -54,29 +48,8 @@ export default function Header({
             </div>
           </div>
 
-          {/* Right: Quick Search, Export, Add Button, Profile */}
-          <div className="flex items-center gap-3 flex-wrap sm:flex-nowrap justify-between sm:justify-end">
-            {/* Quick Header Search */}
-            <div className="relative flex-1 sm:w-64 md:w-72">
-              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => onSearchChange(e.target.value)}
-                placeholder="Quick search employee..."
-                className="w-full pl-9 pr-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-lg text-slate-800 placeholder-slate-400 focus:outline-hidden focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-100 transition-all"
-              />
-              {searchQuery && (
-                <button
-                  type="button"
-                  onClick={() => onSearchChange('')}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-slate-400 hover:text-slate-600 px-1 py-0.5"
-                >
-                  Clear
-                </button>
-              )}
-            </div>
-
+          {/* Right: Add Button & Profile */}
+          <div className="flex items-center gap-3 justify-end">
             {/* Add Attendance Button */}
             <button
               type="button"

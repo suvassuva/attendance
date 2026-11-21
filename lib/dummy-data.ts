@@ -339,7 +339,7 @@ export const STAFF_MOVEMENTS: StaffMovement[] = [
   }
 ];
 
-export const INITIAL_ATTENDANCE_DATA: Attendance[] = [
+const NOV_20_DATA: Attendance[] = [
   {
     "id": "att-bg-1001",
     "employeeId": "EMP-1001",
@@ -1333,3 +1333,39 @@ export const INITIAL_ATTENDANCE_DATA: Attendance[] = [
     "createdAt": "2026-11-20T03:30:00.000Z"
   }
 ];
+
+export const MASTER_EMPLOYEES = NOV_20_DATA.map((item) => ({
+  employeeId: item.employeeId,
+  name: item.name,
+  email: item.email,
+  department: item.department,
+  role: item.role,
+  branch: item.branch,
+}));
+
+export function generateRosterForDate(targetDate: string): Attendance[] {
+  return MASTER_EMPLOYEES.map((emp) => {
+    return {
+      id: `att-${targetDate}-${(emp.employeeId || 'emp').toLowerCase()}`,
+      employeeId: emp.employeeId,
+      name: emp.name,
+      employeeName: emp.name,
+      email: emp.email,
+      department: emp.department,
+      role: emp.role,
+      branch: emp.branch,
+      date: targetDate,
+      checkIn: '--:--',
+      checkOut: '--:--',
+      status: 'Pending' as const,
+      notes: 'Pending attendance marking / Excel upload',
+      createdAt: `${targetDate}T04:00:00.000Z`,
+    };
+  });
+}
+
+export const INITIAL_ATTENDANCE_DATA: Attendance[] = [
+  ...NOV_20_DATA,
+  ...generateRosterForDate('2026-11-21'),
+];
+

@@ -17,7 +17,7 @@ interface AttendanceFiltersProps {
   totalRecords: number;
 }
 
-const STATUS_OPTIONS: AttendanceStatus[] = ['Present', 'Late', 'Half-Day', 'Absent'];
+const STATUS_OPTIONS: AttendanceStatus[] = ['Present', 'Late', 'Half-Day', 'Absent', 'Pending'];
 
 export default function AttendanceFilters({
   filters,

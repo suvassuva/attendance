@@ -13,6 +13,7 @@ import {
   Plus,
   ArrowLeftRight,
   Phone,
+  Sparkles,
 } from 'lucide-react';
 import { Attendance, AttendanceStatus } from '@/types/attendance';
 import { formatToDisplayTime } from '@/lib/attendance/attendance-utils';
@@ -25,6 +26,8 @@ interface AttendanceTableProps {
   onReplace?: (record: Attendance) => void;
   onResetFilters?: () => void;
   onAddNew?: () => void;
+  onInitializeRoster?: () => void;
+  activeDate?: string;
 }
 
 // Helper to extract full reliever details from fields or notes
@@ -114,6 +117,13 @@ function StatusBadge({ status }: { status: AttendanceStatus }) {
           Absent
         </span>
       );
+    case 'Pending':
+      return (
+        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-slate-100 text-slate-600 border border-slate-200">
+          <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
+          Pending
+        </span>
+      );
     default:
       return (
         <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-slate-100 text-slate-700">
@@ -131,6 +141,8 @@ export default function AttendanceTable({
   onReplace,
   onResetFilters,
   onAddNew,
+  onInitializeRoster,
+  activeDate,
 }: AttendanceTableProps) {
   // Guarantee strictly 1 record per employee per date (no duplicate names on the same day)
   const uniqueRecords = React.useMemo(() => {
@@ -193,12 +205,24 @@ export default function AttendanceTable({
           <AlertCircle className="w-7 h-7" />
         </div>
         <h3 className="text-base font-semibold text-slate-800 mb-1">
-          No attendance records found
+          {activeDate ? `No attendance recorded for ${activeDate}` : 'No attendance records found'}
         </h3>
-        <p className="text-sm text-slate-500 max-w-sm mx-auto mb-6">
-          No employee records matched your active filters or search term. Try adjusting your filters or record a new attendance entry.
+        <p className="text-sm text-slate-500 max-w-md mx-auto mb-6">
+          {activeDate
+            ? `Attendance has not been generated for ${activeDate} yet. You can initialize the full team roster (62 employees across 54 branches) with one click or view all records.`
+            : 'No employee records matched your active filters or search term. Try adjusting your filters or record a new attendance entry.'}
         </p>
-        <div className="flex items-center justify-center gap-3">
+        <div className="flex items-center justify-center gap-3 flex-wrap">
+          {onInitializeRoster && activeDate && (
+            <button
+              type="button"
+              onClick={onInitializeRoster}
+              className="inline-flex items-center gap-2 px-4 py-2 text-xs sm:text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-all shadow-xs cursor-pointer"
+            >
+              <Sparkles className="w-4 h-4" />
+              <span>Initialize Roster for {activeDate} (62 Employees)</span>
+            </button>
+          )}
           {onResetFilters && (
             <button
               type="button"
@@ -206,17 +230,17 @@ export default function AttendanceTable({
               className="inline-flex items-center gap-2 px-3.5 py-2 text-xs sm:text-sm font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors cursor-pointer"
             >
               <RotateCcw className="w-3.5 h-3.5" />
-              <span>Reset Filters</span>
+              <span>{activeDate ? 'View All Records' : 'Reset Filters'}</span>
             </button>
           )}
           {onAddNew && (
             <button
               type="button"
               onClick={onAddNew}
-              className="inline-flex items-center gap-2 px-3.5 py-2 text-xs sm:text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors cursor-pointer"
+              className="inline-flex items-center gap-2 px-3.5 py-2 text-xs sm:text-sm font-medium text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg transition-colors cursor-pointer"
             >
               <Plus className="w-3.5 h-3.5" />
-              <span>Add Record</span>
+              <span>Add Single Record</span>
             </button>
           )}
         </div>
@@ -226,19 +250,19 @@ export default function AttendanceTable({
 
   return (
     <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
-      {/* Table responsive scroll container */}
-      <div className="overflow-x-auto">
-        <table className="w-full text-left border-collapse">
+      {/* Table responsive container - sized to fit 100% without horizontal scrollbar */}
+      <div className="overflow-x-auto xl:overflow-x-visible">
+        <table className="w-full text-left border-collapse table-auto">
           <thead>
-            <tr className="bg-slate-50/80 border-b border-slate-200 text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
-              <th scope="col" className="py-3.5 px-4 sm:px-6">Employee Name</th>
-              <th scope="col" className="py-3.5 px-4">Role</th>
-              <th scope="col" className="py-3.5 px-4">Branch</th>
-              <th scope="col" className="py-3.5 px-4">Date</th>
-              <th scope="col" className="py-3.5 px-4">Check In</th>
-              <th scope="col" className="py-3.5 px-4">Check Out</th>
-              <th scope="col" className="py-3.5 px-4">Status</th>
-              <th scope="col" className="py-3.5 px-4 sm:px-6 text-right">Actions</th>
+            <tr className="bg-slate-50/90 border-b border-slate-200 text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+              <th scope="col" className="py-3 px-3 sm:px-4 text-left">Employee Name</th>
+              <th scope="col" className="py-3 px-2 text-center w-20">Role</th>
+              <th scope="col" className="py-3 px-2 sm:px-3 text-left">Branch</th>
+              <th scope="col" className="py-3 px-2 sm:px-3 text-left w-28">Date</th>
+              <th scope="col" className="py-3 px-2 sm:px-3 text-left w-24">Check In</th>
+              <th scope="col" className="py-3 px-2 sm:px-3 text-left w-24">Check Out</th>
+              <th scope="col" className="py-3 px-2 sm:px-3 text-center w-28">Status</th>
+              <th scope="col" className="py-3 px-3 sm:px-4 text-center w-36">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100 text-sm text-slate-700">
@@ -317,20 +341,22 @@ export default function AttendanceTable({
                   </td>
 
                   {/* 2. Role / Designation (BM / ABM) */}
-                  <td className="py-3.5 px-4 whitespace-nowrap">
-                    <span
-                      className={`inline-flex items-center px-2.5 py-0.5 rounded-md text-xs font-bold tracking-wide ${
-                        record.role === 'Assistant Branch Manager' || record.department === 'ABM'
-                          ? 'bg-indigo-50 text-indigo-700 border border-indigo-200'
-                          : 'bg-blue-50 text-blue-700 border border-blue-200'
-                      }`}
-                    >
-                      {record.role === 'Assistant Branch Manager' || record.department === 'ABM' ? 'ABM' : 'BM'}
-                    </span>
+                  <td className="py-3 px-2 text-center whitespace-nowrap">
+                    <div className="flex items-center justify-center">
+                      <span
+                        className={`inline-flex items-center px-2.5 py-0.5 rounded-md text-xs font-bold tracking-wide ${
+                          record.role === 'Assistant Branch Manager' || record.department === 'ABM'
+                            ? 'bg-indigo-50 text-indigo-700 border border-indigo-200'
+                            : 'bg-blue-50 text-blue-700 border border-blue-200'
+                        }`}
+                      >
+                        {record.role === 'Assistant Branch Manager' || record.department === 'ABM' ? 'ABM' : 'BM'}
+                      </span>
+                    </div>
                   </td>
 
                   {/* 2b. Branch */}
-                  <td className="py-3.5 px-4 whitespace-nowrap">
+                  <td className="py-3.5 px-3 whitespace-nowrap">
                     <div className="flex items-center gap-1.5 text-xs text-slate-600">
                       <MapPin className="w-3.5 h-3.5 text-slate-400 shrink-0" />
                       <span>{record.branch || 'Bannerghatta'}</span>
@@ -338,7 +364,7 @@ export default function AttendanceTable({
                   </td>
 
                   {/* 3. Date */}
-                  <td className="py-3.5 px-4 whitespace-nowrap">
+                  <td className="py-3.5 px-3 whitespace-nowrap">
                     <div className="flex items-center gap-1.5 text-xs text-slate-600">
                       <Calendar className="w-3.5 h-3.5 text-slate-400" />
                       <span>{record.date}</span>
@@ -346,7 +372,7 @@ export default function AttendanceTable({
                   </td>
 
                   {/* 4. Check In */}
-                  <td className="py-3.5 px-4 whitespace-nowrap">
+                  <td className="py-3.5 px-3 whitespace-nowrap">
                     <div className="flex items-center gap-1.5 text-xs font-medium text-slate-700">
                       <Clock className="w-3.5 h-3.5 text-slate-400" />
                       <span>{displayCheckIn}</span>
@@ -354,7 +380,7 @@ export default function AttendanceTable({
                   </td>
 
                   {/* 5. Check Out */}
-                  <td className="py-3.5 px-4 whitespace-nowrap">
+                  <td className="py-3.5 px-3 whitespace-nowrap">
                     <div className="flex items-center gap-1.5 text-xs font-medium text-slate-700">
                       <Clock className="w-3.5 h-3.5 text-slate-400" />
                       <span>{displayCheckOut}</span>
@@ -362,41 +388,43 @@ export default function AttendanceTable({
                   </td>
 
                   {/* 6. Status */}
-                  <td className="py-3.5 px-4 whitespace-nowrap">
-                    <StatusBadge status={record.status} />
+                  <td className="py-3 px-2 sm:px-3 text-center whitespace-nowrap">
+                    <div className="flex items-center justify-center">
+                      <StatusBadge status={record.status} />
+                    </div>
                   </td>
 
-                  {/* 7. Actions */}
-                  <td className="py-3.5 px-4 sm:px-6 text-right whitespace-nowrap">
-                    <div className="flex items-center justify-end gap-1">
+                  {/* 7. Actions (Centered, clean alignment) */}
+                  <td className="py-2.5 px-3 sm:px-4 text-center whitespace-nowrap w-36">
+                    <div className="flex items-center justify-center gap-1.5">
                       {onReplace && (
                         <button
                           type="button"
                           onClick={() => onReplace(record)}
                           title={record.status === 'Absent' ? `Assign Reliever for ${displayName}` : `Deploy ${displayName} as Reliever`}
-                          className="p-1.5 text-slate-400 hover:text-amber-600 hover:bg-amber-50 rounded-md transition-colors cursor-pointer"
+                          className="p-1.5 text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-200/80 rounded-lg shadow-2xs transition-all active:scale-95 cursor-pointer"
                           aria-label={`Reliever assignment for ${displayName}`}
                         >
-                          <ArrowLeftRight className="w-4 h-4" />
+                          <ArrowLeftRight className="w-3.5 h-3.5" />
                         </button>
                       )}
                       <button
                         type="button"
                         onClick={() => onEdit(record)}
                         title="Edit Attendance"
-                        className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-md transition-colors cursor-pointer"
+                        className="p-1.5 text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200/80 rounded-lg shadow-2xs transition-all active:scale-95 cursor-pointer"
                         aria-label={`Edit ${displayName}`}
                       >
-                        <Edit3 className="w-4 h-4" />
+                        <Edit3 className="w-3.5 h-3.5" />
                       </button>
                       <button
                         type="button"
                         onClick={() => onDelete(record)}
                         title="Delete Attendance"
-                        className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-md transition-colors cursor-pointer"
+                        className="p-1.5 text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200/80 rounded-lg shadow-2xs transition-all active:scale-95 cursor-pointer"
                         aria-label={`Delete ${displayName}`}
                       >
-                        <Trash2 className="w-4 h-4" />
+                        <Trash2 className="w-3.5 h-3.5" />
                       </button>
                     </div>
                   </td>
@@ -411,6 +439,9 @@ export default function AttendanceTable({
       <div className="px-4 sm:px-6 py-3 border-t border-slate-100 bg-slate-50/50 flex flex-col sm:flex-row items-center justify-between text-xs text-slate-500 gap-2">
         <span>Showing {uniqueRecords.length} records</span>
         <div className="flex items-center gap-4">
+          <span className="flex items-center gap-1.5">
+            <span className="w-2 h-2 rounded-full bg-slate-400" /> Pending
+          </span>
           <span className="flex items-center gap-1.5">
             <span className="w-2 h-2 rounded-full bg-emerald-500" /> Present
           </span>

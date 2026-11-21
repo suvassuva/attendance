@@ -56,7 +56,7 @@ export default function ReplaceEmployeeModal({
   const [coveringForName, setCoveringForName] = useState<string>('');
   const [targetAbsentId, setTargetAbsentId] = useState<string>('');
 
-  const [date, setDate] = useState('2026-11-20');
+  const [date, setDate] = useState('2026-11-21');
   const [checkIn, setCheckIn] = useState('09:30');
   const [checkOut, setCheckOut] = useState('18:30');
   const [notes, setNotes] = useState('');
@@ -117,7 +117,7 @@ export default function ReplaceEmployeeModal({
   useEffect(() => {
     if (record) {
       setError(null);
-      setDate(record.date || '2026-11-20');
+      setDate(record.date || '2026-11-21');
       setCheckIn('09:30');
       setCheckOut('18:30');
       setCustomRelieverMode(false);

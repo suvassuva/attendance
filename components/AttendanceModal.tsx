@@ -34,7 +34,7 @@ interface AttendanceModalProps {
   isSubmitting?: boolean;
 }
 
-const STATUSES: AttendanceStatus[] = ['Present', 'Late', 'Half-Day', 'Absent'];
+const STATUSES: AttendanceStatus[] = ['Present', 'Late', 'Half-Day', 'Absent', 'Pending'];
 
 // Converts HH:mm (or 12-hour AM/PM) to HH:mm for native time input
 function toTimeInput(timeStr?: string): string {
@@ -82,7 +82,7 @@ function AttendanceModalContent({
       employeeName: '',
       department: 'BM',
       branch: branches[0] || 'Bannerghatta',
-      date: '2026-11-20',
+      date: '2026-11-21',
       checkIn: '09:30',
       checkOut: '18:30',
       status: 'Present',
@@ -474,6 +474,8 @@ function AttendanceModalContent({
                 activeColor = 'border-yellow-500 bg-yellow-50 text-yellow-800 font-semibold';
               if (st === 'Absent')
                 activeColor = 'border-rose-500 bg-rose-50 text-rose-800 font-semibold';
+              if (st === 'Pending')
+                activeColor = 'border-slate-400 bg-slate-100 text-slate-800 font-semibold';
 
               return (
                 <button
